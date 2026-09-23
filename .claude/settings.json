@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx skills *)",
+      "Read(//usr/local/bin/**)",
+      "Read(//root/.nvm/versions/**)",
+      "Read(//root/.volta/**)",
+      "Bash(ls -d /root/LQ-Map/.claude/skills/* 2>/dev/null; echo \"--- personal ---\"; ls -d /root/.claude/skills/* 2>/dev/null | head)",
+      "Read(//root/.claude/skills/**)",
+      "Bash(mkdir -p /root/LQ-Map/.claude/skills/clean-code)",
+      "Bash(cp /tmp/claude-0/-root-LQ-Map/d073e1d6-e86b-439e-ae6e-b7e3973673ed/scratchpad/agentic-awesome-skills/skills/clean-code/SKILL.md /root/LQ-Map/.claude/skills/clean-code/SKILL.md)"
+    ]
+  }
+}

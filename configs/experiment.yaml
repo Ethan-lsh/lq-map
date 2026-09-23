@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "seed": 7,
+  "mode": "serialized",
+  "layout": {
+    "usable": [
+      [
+        0,
+        0
+      ],
+      [
+        0,
+        1
+      ],
+      [
+        1,
+        0
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        2,
+        0
+      ],
+      [
+        2,
+        1
+      ]
+    ],
+    "blocked": []
+  },
+  "placement": {
+    "q0": [
+      1,
+      0
+    ],
+    "q1": [
+      2,
+      0
+    ],
+    "q2": [
+      1,
+      1
+    ],
+    "q3": [
+      2,
+      1
+    ]
+  },
+  "mscs": {
+    "m0": [
+      0,
+      0
+    ],
+    "m1": [
+      0,
+      1
+    ]
+  },
+  "costs": {
+    "swap": 1,
+    "initialize": 1,
+    "produce": 3,
+    "consume": 1,
+    "single": 1,
+    "two": 2
+  },
+  "workload": {
+    "family": "alternating",
+    "requests": 4
+  },
+  "policy": "JointScheduler",
+  "settings": {
+    "lookahead_depth": 2,
+    "beam_width": 2,
+    "candidate_limit": 8,
+    "path_limit": 5,
+    "max_hops": 3,
+    "search_limit": 16,
+    "route_states": 300,
+    "event_limit": 300
+  },
+  "variants": [
+    {
+      "policy": "FixedSite"
+    },
+    {
+      "policy": "NextRequestGreedy"
+    },
+    {
+      "policy": "JointScheduler"
+    }
+  ]
+}
