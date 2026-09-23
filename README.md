@@ -1,155 +1,221 @@
 # mscmap
 
-A research experiment framework for DAG-aware selection of next magic-state
-cultivation sites, logical SWAPs, MSC assignments, and T-request schedules.
-The objective is minimum total logical SWAP count without a circuit
-completion deadline. Operation durations are illustrative abstract time units;
-this is not a physical error-correction or cultivation simulator.
+A reproducible research framework for jointly choosing **magic-state cultivation
+(MSC) sites, logical-qubit SWAPs, and T-request schedules** using circuit dependency
+DAGs. The objective is to minimize total logical SWAPs without a circuit completion
+deadline; makespan, request waits, and planning time are reported alongside it.
 
-## Run experiments
+[Quick start](#quick-start) · [Policies](#policies) · [Configuration](#configuration) ·
+[Results](#results) · [Documentation](#documentation)
 
-Python 3.11 or newer is required. The native execution path has no third-party
-dependencies. From the repository root:
+> [!NOTE]
+> This is an abstract scheduling model. Operation durations are illustrative integer
+> cycles, not calibrated hardware timings. Results do not establish physical
+> cultivation feasibility or general policy superiority.
+
+## Quick start
+
+Use **Python 3.11+**. The native execution path and supplied configurations require
+no third-party packages or quantum SDKs. From the repository root:
 
 ```bash
 export PYTHONPATH="$PWD/src"
 python3 -m mscmap run --config configs/experiment.yaml --output results/comparison
-python3 examples/workload_sweep.py --output results/comparison
 ```
 
-Use the same output directory across invocations; existing raw runs are preserved
-and the final summary is regenerated from all records. The supplied `.yaml` files use JSON syntax, a YAML subset. General
-YAML syntax requires the optional PyYAML package.
+This compares `FixedSite`, `NextRequestGreedy`, and `JointScheduler` on the same
+four-data-qubit, two-MSC layout, with four T requests and serialized relocation.
+It prints result rows and writes two files:
 
-The default `configs/experiment.yaml` compares three basic policies: FixedSite,
-NextRequestGreedy, and JointScheduler. All three share the
-same two-MSC resources, circuit, costs, and serialized relocation mode. Ablations
-and additional relocation modes are not included in the default comparison.
-Single-MSC inputs and custom variants remain supported by the same engine.
+```text
+results/comparison/
+├── summary.csv
+└── raw_data.zip
+```
 
-Every run writes only `summary.csv` and `raw_data.zip` at the output root.
-The archive contains one `raw_data.jsonl` stream with configurations, metrics, and traces. The configuration embeds the
-concrete circuit, placement, costs, limits, seed, and model/code metadata. Failed,
-stalled, and search-limited outcomes remain in the summary. CLI exit 0 means results
-were recorded; inspect `status` and `circuit_completed` separately.
+For an editable installation, use `python3 -m pip install -e .` instead of setting
+`PYTHONPATH`. The supplied `.yaml` files use JSON syntax, a YAML subset. To use
+general YAML, install the optional parser with `python3 -m pip install -e '.[yaml]'`.
 
-There is one command and one output layout for all experiments. A config's
-`variants` list defines which policy/mode/backend combinations to run. Omit the
-list to execute just the top-level policy/backend, or select one named variant
-from the same configuration:
+> [!IMPORTANT]
+> CLI exit code 0 means results were recorded. Inspect `status` in the summary and
+> `circuit_completed` in the archived metrics before comparing SWAP counts. Partial
+> runs remain visible and can have low counts because they did not finish.
+
+## Policies
+
+Every policy uses the same discrete-event simulator, operation contracts, ordinary
+gate routing, and online measurements. The default experiment varies policy only.
+
+| Policy | Decision rule |
+| --- | --- |
+| `FixedSite` | Assign the first demand to the first idle MSC, retain its site, and route data as needed. |
+| `NextRequestGreedy` | Use the same request/MSC selection; rank legal site paths by immediate request completion time, then added SWAPs and stable action order. |
+| `JointScheduler` | Preserve a completed internal baseline schedule and explore future requests, MSC assignments, and sites through bounded simulation. |
+
+`JointScheduler` first runs its private immediate-SWAP planner to completion. That
+planner also completes candidate tails. Only completed continuations can replace
+the incumbent, and only for a strictly smaller `(total SWAPs, makespan)` pair.
+Exact ties preserve the schedule, including waits. Execution commits a prefix and
+retains the full continuation; divergence from the saved prefix raises an error.
+
+If the initial baseline completes and its continuation is preserved, accepted
+schedules cannot increase its SWAP count. Execution limits can still interrupt a
+run. If the baseline fails, bounded candidate search may still find a completion.
+The internal planner is not a fourth public policy or a guarantee of optimality.
+
+## Configuration
+
+Start with one of the supplied configurations:
+
+| File | Purpose |
+| --- | --- |
+| [configs/experiment.yaml](configs/experiment.yaml) | Three basic policies with identical resources and serialized relocation. |
+| [configs/tiny.yaml](configs/tiny.yaml) | Tiny policy comparison plus an explicitly selected oracle variant. |
+
+A configuration defines explicit `layout.usable` and `layout.blocked` coordinates,
+logical-qubit `placement`, named `mscs`, operation `costs`, and exactly one of:
+
+- `circuit`: an inline circuit object or a path relative to the configuration file;
+  see [examples/tiny.json](examples/tiny.json). Supported gates are H, S, X, Z, T,
+  CX, and CZ. Per-qubit ordering is preserved; explicit predecessors add DAG edges.
+- `workload`: a seeded synthetic workload. Families include localized, migrating,
+  alternating, distributed, and data-heavy demand. Logical targets are fixed from
+  initial placement, not regenerated after movement.
+
+The `variants` list can override only `name`, `policy`, `mode`, `settings`, and
+`backend`. Circuit, placement, geometry, MSC count, and costs remain shared.
+Without `variants`, the top-level policy/backend runs once.
+
+Search settings expose demand `window`, `lookahead_depth`, `beam_width`,
+`candidate_limit`, `path_limit`, `max_hops`, `route_states`, `search_limit`, and
+`event_limit`. Optional `no_site_changes` and `fixed_assignment` ablations are
+available but excluded from the default comparison. See
+[search settings](docs/architecture.md#search-settings-and-ablations) for definitions.
+
+### Run selections and repeats
+
+Select one variant and append a second timing measurement to the quick-start output:
 
 ```bash
 python3 -m mscmap run --config configs/experiment.yaml --variant JointScheduler --repeat 2 --output results/comparison
 ```
 
-Both single and multiple variants produce `summary.csv` and `raw_data.zip`. There are no separate demo or
-compare commands/configurations. The former `compare` configuration field is now
-`variants`; oracle entries use `"backend": "oracle"`. Historical result directories
-are preserved. Output names are chosen with `--output`.
+`--repeat` is a **repeat identifier**, not a repetition count. It defaults to 1.
+CLI case IDs default to the configuration filename stem; use `--case-id NAME`
+when recording a different input. Each `(case_id, repeat, variant name)` must be
+unique. Repeated commands with the same key are rejected.
 
-With pip, optional installation is available:
-
-```bash
-python3 -m pip install -e .
-python3 -m pip install -e '.[yaml]'
-```
-
-## Research decisions and measurements
-
-- FixedSite retains production sites; NextRequestGreedy favors immediate request
-  completion time.
-- JointScheduler considers future requests, assignments, and sites with bounded
-  simulation. It ranks completed continuations by total SWAPs and
-  commits the first assignment. A simulated feasible continuation is retained.
-- All policies share ordinary-gate routing, resource semantics, and measurement.
-  Policies are the experimental treatments, not software self-tests.
-- Single MSC and fixed multi-MSC footprints support `serialized`, `disjoint_paths`,
-  and `space_time` relocation. Independent production can overlap.
-- Metrics include SWAP count/depth, makespan, request waits, relocations, circuit
-  completion, and planning wall time. They are accumulated during execution.
-
-The current experiment-focused version removes the standalone code-test suite,
-independent trace replay, and the `validate` command at the user's request. Candidate
-and final traces are not re-executed by a second checker. Input validation,
-operation preconditions, resource conflicts, actual DAG readiness,
-and termination limits remain: they define feasible experiment schedules.
-The implementation brief and AGENTS.md document this experiment-focused scope,
-including the scheduling model and optimization objective.
-
-## Optional exact reference
-
-`oracle` is an optional exhaustive optimization backend for one MSC, at most three usable
-cells, four gates, and oracle search horizon at most 14. It provides a tiny-instance search
-comparison, not routine experiment execution or a code-test suite:
+For controlled workload comparisons, the helper uses the same experiment engine:
 
 ```bash
-python3 -m mscmap run --config configs/tiny.yaml --output results/comparison
-python3 -m mscmap run --config configs/tiny.yaml --variant oracle --repeat 2 --output results/comparison
+python3 examples/workload_sweep.py --output results/comparison --case migrating --case cx_dense --repeats 3
 ```
 
-Ordinary policy comparisons do not invoke it. It runs only when explicitly
-selected by a variant with `"backend": "oracle"`. Compare its observed SWAP count,
-completion time, waits, and planning cost under identical inputs, just like other
-backends. Search-limit termination is reported in `reason`; any available completed
-schedule is retained. Results do not evaluate optimality or gaps
-to a reference optimum.
+Here, `--repeats` is a count. Omitting `--case` selects all 18 predefined cases:
+54 case/policy rows and 162 executions at the default three repeats. Cases vary
+demand distribution, dependencies, CX frequency, placement, and circuit size.
+See [workload cases](docs/experiments.md#controlled-workload-comparison) before
+starting a full sweep.
 
-## Interpretation and scope
+### Optional tiny oracle
 
-Compare identical circuits, placement, patches, MSC count, and costs.
-Changing MSC counts or footprints is a resource comparison, not a policy-only improvement. Workloads cover localized, migrating, alternating, and
-frequent data-interaction demand, with targets fixed by initial logical placement.
+The exhaustive oracle backend supports exactly one MSC, at most three usable
+cells, at most four gates, and an integer `oracle_horizon` from 1 to 14:
 
-The framework matches the proposed question at the abstract-model level. Its
-bounded site/beam search and conservative shared data routing do not enumerate all
-joint schedules. Idle MSC exchanges are limited to next-production preparation,
-and ordinary data routing commits one SWAP at a time. These restrictions can affect
-observed gains. Small supplied examples do not establish general research superiority
-or physical cultivation feasibility. A not-found/stalled result is not a proof of
-infeasibility.
+```bash
+python3 -m mscmap run --config configs/tiny.yaml --variant oracle --output results/comparison
+```
 
-See [model assumptions](docs/model-assumptions.md),
-[architecture and policies](docs/architecture.md), and
-[experiment metrics](docs/experiments.md).
+It runs only when `backend: oracle` is selected, including through a configured
+variant. Omitting `--variant oracle` in this example runs all four tiny variants.
+The horizon is an oracle search restriction, not a deadline for ordinary policies.
+Search-limit termination is recorded in `reason`; results carry no optimality
+labels or gaps to a reference optimum.
 
-Completion deadlines have been removed. Delete `budget` from older input configs;
-new exports use `evaluation_version: performance-v2` and `circuit_completed`.
-Durations and waits are abstract cycles, not calibrated physical code cycles.
-The optional oracle alone uses `oracle_horizon` (default 14, range 1..14) to bound
-search; this restriction does not apply to policy execution.
+## Results
 
-The performance summary has eight columns: `name`, `status`, `swap_count`,
-`swap_depth`, `makespan`, `total_request_wait`, `relocation_count`, and
-`planning_seconds`. Keep status so partial runs cannot be mistaken for completed
-low-cost schedules. Makespan and waits use abstract cycles; planning time uses
-seconds. Configuration, versions, duplicate completion fields, search counters,
-failure reasons, and detailed wait diagnostics stay in the archived run records,
-not the summary. Custom workload batches additionally label
-rows with `case_id`. These observations do not establish general superiority.
+All invocations can append to the same output directory. Single and multiple
+variants use the same layout, with no case, repeat, or policy subdirectories.
 
-The workload helper now runs 18 controlled cases, each with three policies and
-three timing repeats. The root summary adds `case_id` and reports median planning
-time. Use `--case NAME` and `--repeats N` for a smaller selection. See
-[controlled workload comparison](docs/experiments.md#controlled-workload-comparison)
-for factors, case names, and output layout.
+| File | Contents |
+| --- | --- |
+| `summary.csv` | One row per `(case_id, variant name)`, with median planning time across recorded repeats. |
+| `raw_data.zip` | One `raw_data.jsonl` stream containing typed records, resolved inputs, individual measurements, diagnostics, and traces. |
 
-JointScheduler now preserves a completed schedule from the internal immediate-SWAP planner and uses
-lookahead only to improve its `(SWAP count, makespan)` pair. It retains assignments
-and waits on ties. Raw diagnostics identify this as `baseline-improvement-v1`.
-All new runs write only `summary.csv` and `raw_data.zip`; the latter contains one
-JSONL stream with all inputs, repeat measurements, and traces. See
-[raw data format](docs/experiments.md#compact-raw-data-output).
+The summary always has these nine columns:
 
-Public policy names are `FixedSite`, `NextRequestGreedy`, and `JointScheduler`.
-JointScheduler is implemented by the existing `LookaheadJoint` class. Its private
-`_ImmediateSwapPlanner` builds the initial plan and completes candidate tails,
-ranking immediate request completion by SWAPs and stable action order. It is not
-selectable from configuration. Legacy `LookaheadJoint` and `ShortestPathRelocation`
-policy names are rejected with a migration message; use `JointScheduler` instead.
-The optional tiny oracle remains a separate explicitly selected backend, not a
-fourth default policy. Existing historical outputs are not renamed or rewritten.
+| Column | Meaning |
+| --- | --- |
+| `case_id` | Input case label. |
+| `name` | Variant name, defaulting to policy name or `oracle`. |
+| `status` | Execution outcome, retained for partial runs. |
+| `swap_count` | Completed data/data and permitted idle-MSC/data exchanges. |
+| `swap_depth` | SWAP-only physical-patch dependency layers, not elapsed cycles. |
+| `makespan` | Final simulation timestamp in abstract cycles. |
+| `total_request_wait` | Summed T-request waiting from predecessor completion to consumption start, in abstract cycles. |
+| `relocation_count` | Committed preparations whose destination differs from their source. |
+| `planning_seconds` | Median host planning time, including routing and candidate rollouts; excludes file export. |
 
-Reuse the same `--output results/comparison` for all cases. The final summary now
-includes `case_id` and combines all archived runs. Duplicate case/repeat/policy
-keys are rejected; `--case-id` labels a new input and `--repeat` adds a timing
-measurement. See [shared output folder](docs/experiments.md#shared-output-folder).
+Raw `run` records embed the concrete circuit, seed, placement, costs, search limits,
+model assumptions, available code/environment metadata, metrics, and trace.
+Workload batches also include `manifest` and `case` records. Version tags include
+`abstract-patch-v1`, `online-v1`, `performance-v2`, and `baseline-improvement-v1`.
+Measurements come directly from simulator events, without independent trace replay.
+
+Repeated inputs and non-timing summary values must agree for each case/variant;
+otherwise use a new case ID. Planning wall time is not deterministic. Detailed
+completion fields, failure reasons, search counters, and overlapping wait-blocker
+diagnostics stay in the archive. See [metrics and raw data](docs/experiments.md).
+
+Use sequential writers. The output directory must be empty or contain only the
+two compact output files. Handled exceptions discard pending additions and preserve
+previous results. Archive and summary publication is not atomic under forced process
+termination; historical output layouts are not migrated automatically.
+
+## Model and research scope
+
+The layout contains exactly N data cells plus M reusable MSC cells, with no hidden
+buffers or ancillas. Movement is cardinally adjacent. SWAPs change placement while
+logical gate operands remain fixed; ordinary two-qubit gates require adjacency,
+routing, time, and resources.
+
+Relocation prepares the **next** cultivation site. Active production is never moved,
+cancelled, or restarted. Each output belongs to one request and occupies its patch
+until consumed. Reservations use `[start, end)` intervals; same-time completions
+precede new starts, allowing a successor to start when its predecessor finishes.
+
+| Relocation mode | Constraint |
+| --- | --- |
+| `serialized` | One preparation transaction at a time, from assignment through initialization completion. |
+| `disjoint_paths` | Reserve the full preparation path against incompatible operations throughout the transaction. |
+| `space_time` | Reserve resources per operation interval while preserving destination ownership. |
+
+Independent production may overlap in every mode: preparation locks are released
+before cultivation. Site retention remains a candidate whenever legal.
+
+The heuristic router commits one data-routing SWAP at a time and does not pre-route
+unready gates or unsupplied T requests. Idle-MSC/data exchanges require an assigned
+preparation transaction. Bounded site and beam searches do not enumerate all joint
+schedules; a stalled or not-found result does not prove infeasibility. Compare
+completed runs under identical inputs, and distinguish resource changes from policy
+improvements. Production failures, retries, and physical error correction are outside
+this model.
+
+## Documentation
+
+| Resource | Contents |
+| --- | --- |
+| [Model assumptions](docs/model-assumptions.md) | Geometry, lifecycle, operation contracts, reservations, and timing. |
+| [Architecture and policies](docs/architecture.md) | Shared dispatch, policy tie breakers, search limits, and ablations. |
+| [Experiments and metrics](docs/experiments.md) | Workloads, measurement definitions, oracle limits, and archive format. |
+| [Implementation brief](mscmap-codex-implementation-prompt.md) | Current research and maintenance scope. |
+
+The Python package lives in [`src/mscmap/`](src/mscmap/): `ir` and `analysis` handle
+DAGs and demand estimates; `model` and `sim` enforce execution; `routing` and
+`policies` plan actions; `metrics` and `experiments` measure and export runs;
+`oracle` provides the optional tiny-instance search.
+
+For older configurations, remove `budget`, replace `compare` with `variants`, and
+use `backend: oracle` instead of `oracle: true`. Legacy public policy names
+`LookaheadJoint` and `ShortestPathRelocation` are rejected; use `JointScheduler`.
