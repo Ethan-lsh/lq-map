@@ -1,8 +1,9 @@
-# mscmap implementation brief
+# mscmap research brief
 
-Update the existing Python experiment framework according to `Description.md`.
-Follow `AGENTS.md`, inspect the current implementation, and reuse components
-that remain compatible with the research model.
+This is the current research brief for the `mscmap` experiment framework.
+`AGENTS.md` restates its essential constraints together with repository
+conventions; inspect the current implementation and reuse components that
+remain compatible with the research model.
 
 ## 1. Research objective
 
@@ -22,11 +23,13 @@ delays. SWAP count is one cost metric, not the sole optimization objective.
 
 - Place data patches and `M` reusable MSC resources on an explicit tile grid.
   All logical patches have the same fixed boundary orientation; no rotation.
-- Patch adjacency follows the grid: SWAPs are supported between neighboring
-  patches in all four cardinal directions (up, down, left, right). Diagonal
-  SWAPs are disallowed. Execution requires available auxiliary resources and
-  movable participants; this does not make arbitrary Clifford gates executable
-  in every direction.
+- Patch adjacency follows the grid: SWAPs (and moves into an empty data slot)
+  exchange in-line neighboring slots (adjacent or separated by one junction tile)
+  in the four cardinal directions (up, down, left, right) and reserve one
+  auxiliary bus tile. Diagonal SWAPs are disallowed. Execution requires the
+  auxiliary tile and movable participants; MSC sites and held outputs never
+  move. This does not make arbitrary Clifford gates executable in every
+  direction.
 - Represent patch footprints and the local ancillas and inter-patch junctions
   needed by operations explicitly. Include them in space and time accounting.
   Legal cultivation sites do not create additional MSC resources.
@@ -36,10 +39,12 @@ delays. SWAP count is one cost metric, not the sole optimization objective.
 - For Clifford operations, T-state consumption, cultivation, and SWAP, specify
   the required relative placement, boundary contacts, auxiliary regions,
   occupied resources, and duration. Adjacency alone is insufficient for execution.
-- Specify how SWAP is implemented and charge its resource and time costs.
-  Track logical-qubit identities through each exchange so subsequent operations
-  use the updated mapping. State the assumptions under which an MSC resource
-  can operate at its destination.
+- Model SWAP as an abstract exchange with explicit reserved tiles, resource
+  cost, and duration; label its physical protocol as unspecified. Track
+  logical-qubit identities through each exchange so subsequent operations use
+  the updated mapping. State the assumptions under which an MSC resource can
+  operate at its destination (any empty cultivation slot; relocation transfers
+  no state).
 - Relocate MSC resources only while idle, before initialization/cultivation.
   Never move active cultivation. A produced state remains owned and occupies
   its patch until consumption; the MSC resource becomes reusable afterward.
@@ -51,8 +56,9 @@ delays. SWAP count is one cost metric, not the sole optimization objective.
   movement, production, and consumption.
 
 Use one shared legality and cost model for SWAP planning, policies, and simulation.
-Document sourced operation protocols and distinguish them from abstract model
-assumptions. Keep uncalibrated durations and areas in abstract units.
+Record model assumptions in the resolved experiment metadata, and cite an
+operation protocol only when it is verified in an available source. Keep
+uncalibrated durations and areas in abstract units.
 
 ## 3. Mapping and scheduling
 
@@ -101,16 +107,24 @@ Vary T-demand locality and burstiness, Clifford interaction density, circuit
 size, MSC pool size, cultivation latency and supply variability, relocation
 cost, and available ancillary space. Include large circuits and high T demand,
 as well as cases where extra relocation worsens execution time or waiting.
+Define workload targets relative to the supplied placement; never regenerate the
+circuit after movement.
+
+Circuits come from seeded synthetic workloads or from explicit gate lists,
+including OpenQASM files decomposed into Clifford+T by an optional Qiskit front
+end. Qiskit only prepares the circuit; dependencies, placement, and scheduling
+remain the framework's own.
 
 Support deterministic reference runs and reproducible stochastic cultivation
 experiments. Declare the supply model and retry costs; planning must not access
 future realized outcomes. Separate stochastic samples from timing repetitions.
 
-Use FlowRouter's spacetime/stochastic-cultivation ideas and RushHour-like geometry
-as references. RushHour is a conceptual reference only; the tile structure and the
-logical-qubit placement need not follow it. Do not equate distributed capacity with a dedicated patch beside
-every T gate, confuse backup injection space with production capacity, or label
-a simplified comparator as an exact reproduction of either paper.
+Use FlowRouter's spacetime/stochastic-cultivation ideas and RushHour's tile
+geometry as design references only. RushHour is conceptual; the tile structure
+and the logical-qubit placement need not follow it. Do not equate distributed
+capacity with a dedicated patch beside every T gate, confuse backup injection
+space with production capacity, or label a simplified comparator as an exact
+reproduction of either paper.
 
 ## 5. Metrics and outputs
 
@@ -121,20 +135,23 @@ a simplified comparator as an exact reproduction of either paper.
 | Space | Total provisioned area and spacetime volume, including idle capacity, local ancillas, and junctions |
 | MSC service | Resource utilization, relocation time, production/retry time, output holding, and request waiting |
 
-Define units, accounting conventions, and utilization denominators explicitly.
+Define units, accounting conventions, and utilization denominators explicitly
+in the resolved experiment metadata.
 Measure request waiting from DAG readiness to consumption start. Retain failed
 and partial runs, but compare completed-run performance separately.
 
 Keep the existing `run` CLI and one output folder containing `summary.csv` and
-`raw_data.zip`. Store resolved configurations, placements, seeds, per-run metrics,
-and operation traces in the raw data. Version changed model/schema semantics;
-reject duplicate records and incompatible appends rather than altering old data.
+`raw_data.zip`. Store resolved configurations (supplied and resolved placements),
+seeds, samples, per-run metrics, and operation traces in the raw data. Version
+changed model/schema semantics; reject duplicate records and incompatible appends
+rather than altering old data.
 
 ## 6. Implementation and verification
 
-Keep responsibilities aligned with the existing architecture: circuit/demand
-analysis; geometry and operation contracts; resource simulation; mapping,
-SWAP planning, and policies; metrics and experiment exports.
+Keep responsibilities aligned with the existing architecture: circuit input
+(including optional OpenQASM import) and demand analysis; geometry and
+operation contracts; resource simulation; mapping, SWAP planning, and policies;
+metrics and experiment exports.
 
 Implement the geometry and operation rules first, then mapping/scheduling and
 experiments. Verify boundary and ancilla constraints, SWAP-induced mapping
