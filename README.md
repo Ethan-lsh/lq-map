@@ -104,7 +104,20 @@ python3 -m mscmap run --config configs/experiment.yaml --variant JointScheduler 
   --repeat 2 --output results/comparison
 # Controlled factor sweep (locality, burstiness, CX density, pool, supply, ancilla, scale)
 python3 examples/workload_sweep.py --output results/sweep --case reference --case pool_1
+# QASM benchmark over data/<small|medium|large>/*.qasm (needs .[qiskit])
+python3 examples/qasm_benchmark.py --output results/qasm --size small --size medium --max-gates 2000
 ```
+
+[examples/qasm_benchmark.py](examples/qasm_benchmark.py) converts each circuit once,
+sizes a brick layout to its qubit count (`--slot-rows` data rows, default
+`ceil(sqrt(qubits))`; `--msc-count` MSCs, default 2), and compares `FixedSite` with
+`JointScheduler` (idle-only MSC relocation) from the same `demand_aware` initial
+placement (`--mapping supplied` keeps row-major order), with costs and settings from
+`configs/experiment.yaml`. Case IDs are
+`<size>/<file stem>`. Benchmark search bounds: `--rollout-gates` (default 32) bounds
+JointScheduler rollouts, and `event_limit` defaults to 50 × gate count. Circuits with
+arbitrary rotations grow to 10⁴–10⁵ Clifford+T gates under Qiskit's synthesis;
+`--max-gates` skips them before execution and lists them in the archive manifest.
 
 `--repeat` is a timing-repeat identifier; `--samples N` runs stochastic samples
 `0..N-1` (deterministic supply allows one). The CLI case ID defaults to the config
