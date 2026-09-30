@@ -2,89 +2,125 @@
 
 import argparse
 import copy
-import random
+from math import ceil
 from pathlib import Path
 
-from mscmap.experiments import RawDataWriter, load_document, resolve, run, workload
+from experiments import RawDataWriter, load_document, resolve, run, workload
+
+VARIANTS = [
+    {"policy": "FixedSite"},
+    {"policy": "JointScheduler"},
+    {"name": "JointFixedPool", "policy": "JointScheduler", "settings": {"relocation": False}},
+    {"name": "JointDemandMap", "policy": "JointScheduler", "mapping": "demand_aware"},
+]
 
 
 def case_specs() -> list[dict]:
-    """Predeclared one-factor cases followed by two combined cases; no result filtering."""
+    """Predeclared one-factor cases plus pooling and scale cases; no result filtering."""
     base = {
-        "family": "alternating", "requests": 6, "dependency": "independent",
-        "cx_every": 0, "data_qubits": 4, "placement": "reference", "seed": 7,
+        "family": "migrating",
+        "requests": 16,
+        "burst": 2,
+        "cx_per_burst": 2,
+        "cx_span": "global",
+        "dependency": "independent",
+        "data_qubits": 8,
+        "slot_rows": 3,
+        "block_every": 0,
+        "msc_count": 2,
+        "cultivate": 3,
+        "relocate": 1,
+        "success_probability": 1.0,
+        "samples": 1,
+        "seed": 7,
     }
     changes = [
         ("reference", {}),
-        ("localized", {"family": "localized"}),
-        ("migrating", {"family": "migrating"}),
-        ("distributed", {"family": "distributed"}),
-        ("serial", {"dependency": "serial"}),
-        ("fork_join", {"dependency": "fork_join"}),
-        ("cx_sparse", {"cx_every": 3}),
-        ("cx_dense", {"cx_every": 1}),
-        ("placement_near", {"placement": "near"}),
-        ("placement_far", {"placement": "far"}),
-        ("placement_asymmetric", {"placement": "asymmetric"}),
-        ("placement_random_7", {"placement": "random"}),
-        ("placement_random_19", {"placement": "random", "seed": 19}),
-        ("placement_random_31", {"placement": "random", "seed": 31}),
-        ("more_requests", {"requests": 12}),
-        ("more_qubits", {"data_qubits": 6}),
-        ("combined_migrating", {
-            "family": "migrating", "dependency": "fork_join", "cx_every": 2,
-        }),
-        ("combined_distributed", {
-            "family": "distributed", "dependency": "serial", "cx_every": 1,
-            "placement": "random", "seed": 19,
-        }),
+        ("t_localized", {"family": "localized"}),
+        ("t_alternating", {"family": "alternating"}),
+        ("t_distributed", {"family": "distributed"}),
+        ("t_bursty", {"burst": 4}),
+        ("cx_none", {"cx_per_burst": 0}),
+        ("cx_dense", {"cx_per_burst": 6}),
+        ("cx_local", {"cx_per_burst": 6, "cx_span": "local"}),
+        ("pool_1", {"msc_count": 1}),
+        ("pool_4", {"msc_count": 4}),
+        ("cultivation_slow", {"cultivate": 9}),
+        ("supply_stochastic", {"success_probability": 0.5, "samples": 3}),
+        ("relocation_costly", {"relocate": 6}),
+        ("ancilla_poor", {"block_every": 4}),
+        ("ancilla_scarce", {"block_every": 3}),
+        # Equal geometry (area); capacity differs and is reported as msc_pool_size.
+        ("pooling_distributed_4", {"msc_count": 4, "family": "distributed"}),
+        ("pooling_movable_2", {"msc_count": 2, "family": "distributed"}),
+        (
+            "large_high_demand",
+            {"data_qubits": 24, "slot_rows": 5, "requests": 96, "burst": 4, "cx_per_burst": 4},
+        ),
     ]
     return [{"case_id": name, **base, **change} for name, change in changes]
 
 
+def brick_geometry(data_qubits: int, msc_count: int, slot_rows: int, block_every: int):
+    """Brick tile layout: in row r, column c is a slot unless (c + r) % 3 == 2. Slots are
+    directly adjacent along rows, one junction tile apart elsewhere, and every bus tile
+    borders slots on both axes (L-shaped CX contacts). The top and bottom rows hold the
+    C slots; `slot_rows` rows between them hold data. `block_every` k > 0 blocks every
+    k-th interior bus tile (row-major) to reduce ancilla space."""
+    width = 3 * ceil((ceil(data_qubits / slot_rows) + 1) / 2)  # >= one spare slot per row
+    height = slot_rows + 2
+    tiles, bus_index = [], 0
+    for r in range(height):
+        row = []
+        for c in range(width):
+            if (c + r) % 3 != 2:
+                row.append("C" if r in (0, height - 1) else "S")
+            elif 0 < r < height - 1 and block_every and bus_index % block_every == 0:
+                row.append(".")
+                bus_index += 1
+            else:
+                row.append("B")
+                bus_index += 0 < r < height - 1
+        tiles.append("".join(row))
+    slots = [(r, c) for r in range(1, height - 1) for c in range(width) if tiles[r][c] == "S"]
+    top = [(0, c) for c in range(width) if tiles[0][c] == "C"]
+    bottom = [(height - 1, c) for c in reversed(range(width)) if tiles[-1][c] == "C"]
+    if msc_count > len(top) + len(bottom):
+        raise ValueError("more MSC resources than cultivation slots")
+    # Spread the pool from opposite corners so fixed capacity is distributed.
+    counts = ((msc_count + 1) // 2, msc_count // 2)
+    chosen = [row[j * len(row) // k] for row, k in zip((top, bottom), counts) for j in range(k)]
+    per_row = ceil(data_qubits / slot_rows)
+    rows = [[t for t in slots if t[0] == r] for r in range(1, height - 1)]
+    placement_tiles = [t for row in rows for t in row[:per_row]][:data_qubits]
+    placement = {f"q{i}": list(t) for i, t in enumerate(placement_tiles)}
+    return tiles, placement, {f"m{i}": list(t) for i, t in enumerate(chosen)}
+
+
 def case_config(common: dict, spec: dict) -> dict:
     config = copy.deepcopy(common)
-    count = spec["data_qubits"]
-    if type(count) is not int or count < 2 or count % 2:
-        raise ValueError("case data_qubits must be an even integer at least two")
-    # Exactly N data cells + 2 MSC cells, on a two-row grid.
-    cells = [[x, y] for x in range(1, count // 2 + 1) for y in range(2)]
-    reference = {f"q{i}": c for i, c in enumerate(cells)}
-    config["layout"] = {"usable": [[0, 0], [0, 1], *cells], "blocked": []}
-    config["mscs"] = {"m0": [0, 0], "m1": [0, 1]}
-    config["mode"] = "serialized"
-    config["seed"] = spec["seed"]
-    config.pop("circuit", None)
+    tiles, placement, mscs = brick_geometry(
+        spec["data_qubits"], spec["msc_count"], spec["slot_rows"], spec["block_every"]
+    )
+    config.update(geometry={"tiles": tiles}, placement=placement, mscs=mscs, seed=spec["seed"])
+    config["costs"] = {
+        **config.get("costs", {}),
+        "cultivate": spec["cultivate"],
+        "relocate": spec["relocate"],
+    }
+    config["supply"] = {"success_probability": spec["success_probability"]}
     config.pop("workload", None)
-    workload_spec = {k: spec[k] for k in ("family", "requests", "dependency", "cx_every")}
-    # Freeze gate identities BEFORE applying a placement treatment.
-    config["circuit"] = workload(workload_spec, reference, spec["seed"])
-    positions = list(cells)
-    names = list(reference)
-    treatment = spec["placement"]
-    if treatment in {"near", "far"}:
-        targets = list(dict.fromkeys(
-            g["qubits"][0] for g in config["circuit"]["gates"] if g["kind"] == "T"
-        ))
-        names = targets + [q for q in names if q not in targets]
-        positions.sort(key=lambda c: (-c[0] if treatment == "far" else c[0], c[1]))
-    elif treatment == "asymmetric":
-        positions[1], positions[-1] = positions[-1], positions[1]
-    elif treatment == "random":
-        random.Random(spec["seed"]).shuffle(positions)
-    elif treatment != "reference":
-        raise ValueError(f"unknown placement treatment: {treatment}")
-    config["placement"] = dict(zip(names, positions))
-    config["variants"] = [{"policy": p} for p in (
-        "FixedSite", "NextRequestGreedy", "JointScheduler"
-    )]
+    keys = ("family", "requests", "burst", "cx_per_burst", "cx_span", "dependency")
+    # Freeze gate identities against the supplied placement before any mapping.
+    config["circuit"] = workload({k: spec[k] for k in keys}, placement, spec["seed"])
+    config["variants"] = VARIANTS
     return config
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--case", action="append", dest="cases", help="select a case; repeatable")
     args = parser.parse_args()
     if args.repeats < 1:
@@ -101,9 +137,11 @@ def main() -> None:
     for _, config in prepared:
         resolve(config, config_path.parent)
     manifest = {
-        "generator_version": "controlled-workloads-v1", "repeats": args.repeats,
-        "planning_seconds": "median of completed repeat measurements, including partial outcomes",
-        "order": "policy order rotated by repeat index", "cases": specs,
+        "generator_version": "controlled-workloads-v3",
+        "repeats": args.repeats,
+        "planning_seconds": "median over timing repeats, per case/sample/variant",
+        "order": "variant order rotated by repeat index",
+        "cases": specs,
     }
     run_count = 0
     with RawDataWriter(args.output) as archive:
@@ -116,8 +154,13 @@ def main() -> None:
                 offset = repeat % len(variants)
                 ordered = {**config, "variants": variants[offset:] + variants[:offset]}
                 batch = run(
-                    ordered, config_path.parent, args.output,
-                    raw_data=archive, case_id=case_id, repeat=repeat + 1,
+                    ordered,
+                    config_path.parent,
+                    args.output,
+                    raw_data=archive,
+                    case_id=case_id,
+                    repeat=repeat + 1,
+                    samples=spec["samples"],
                 )
                 run_count += len(batch)
                 print(f"{case_id}: repeat {repeat + 1}/{args.repeats} recorded", flush=True)

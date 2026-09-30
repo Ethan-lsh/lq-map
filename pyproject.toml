@@ -4,20 +4,26 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mscmap"
-version = "0.1.0"
-description = "Reproducible abstract MSC placement and DAG scheduling experiments"
+version = "0.3.0"
+description = "Reproducible demand-aware patch remapping and MSC scheduling experiments"
 requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
 yaml = ["PyYAML>=6"]
+qiskit = ["qiskit>=2.1"]
 dev = ["ruff>=0.9"]
 
 [project.scripts]
-mscmap = "mscmap.__main__:main"
+mscmap = "mscmap:main"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.setuptools]
+package-dir = { "" = "src" }
+py-modules = [
+    "analysis", "experiments", "ir", "mapping", "metrics", "model",
+    "mscmap", "policies", "qiskit_io", "sim", "swaps",
+]
 
 [tool.ruff]
+src = ["src"]
 line-length = 100

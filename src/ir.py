@@ -3,7 +3,10 @@
 from dataclasses import dataclass
 from typing import Any
 
-ARITY = {"T": 1, "H": 1, "S": 1, "X": 1, "Z": 1, "CX": 2, "CZ": 2}
+ARITY = {"T": 1, "TDG": 1, "H": 1, "S": 1, "SDG": 1, "X": 1, "Z": 1, "CX": 2, "CZ": 2}
+# Gates that consume one magic state. T-dagger is modeled like T (abstract assumption:
+# the differing Clifford correction is folded into the consumption).
+MAGIC_KINDS = frozenset({"T", "TDG"})
 
 
 @dataclass(frozen=True)
@@ -12,6 +15,10 @@ class Gate:
     kind: str
     qubits: tuple[str, ...]
     predecessors: frozenset[str]
+
+    @property
+    def is_magic(self) -> bool:
+        return self.kind in MAGIC_KINDS
 
 
 @dataclass(frozen=True)

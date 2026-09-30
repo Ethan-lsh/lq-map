@@ -1,96 +1,41 @@
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "seed": 7,
-  "mode": "serialized",
-  "layout": {
-    "usable": [
-      [
-        0,
-        0
-      ],
-      [
-        0,
-        1
-      ],
-      [
-        1,
-        0
-      ],
-      [
-        1,
-        1
-      ],
-      [
-        2,
-        0
-      ],
-      [
-        2,
-        1
-      ]
-    ],
-    "blocked": []
+  "geometry": {
+    "tiles": [
+      "CSBSSBCSB",
+      "SBSSBSSBS",
+      "BSSBSSBSS",
+      "SSBSSBSSB",
+      "SBCSBSSBC"
+    ]
   },
   "placement": {
-    "q0": [
-      1,
-      0
-    ],
-    "q1": [
-      2,
-      0
-    ],
-    "q2": [
-      1,
-      1
-    ],
-    "q3": [
-      2,
-      1
-    ]
+    "q0": [1, 2], "q1": [1, 3], "q2": [1, 5], "q3": [2, 4],
+    "q4": [2, 5], "q5": [3, 3], "q6": [3, 4], "q7": [3, 6]
   },
-  "mscs": {
-    "m0": [
-      0,
-      0
-    ],
-    "m1": [
-      0,
-      1
-    ]
-  },
+  "mscs": {"m0": [0, 0], "m1": [4, 8]},
   "costs": {
-    "swap": 1,
-    "initialize": 1,
-    "produce": 3,
-    "consume": 1,
-    "single": 1,
-    "two": 2
+    "single": 1, "two": 2, "consume": 1, "initialize": 1, "cultivate": 3,
+    "swap": 3, "move": 1, "relocate": 1
   },
+  "supply": {"success_probability": 1.0},
+  "objective": {
+    "movement_volume": 1, "operation_volume": 1, "cultivation_volume": 1,
+    "request_wait": 1, "makespan": 1
+  },
+  "mapping": "supplied",
   "workload": {
-    "family": "alternating",
-    "requests": 4
+    "family": "migrating", "requests": 8, "burst": 2, "cx_per_burst": 2,
+    "cx_span": "global", "dependency": "independent"
   },
   "policy": "JointScheduler",
   "settings": {
-    "lookahead_depth": 2,
-    "beam_width": 2,
-    "candidate_limit": 8,
-    "path_limit": 5,
-    "max_hops": 3,
-    "search_limit": 16,
-    "route_states": 300,
-    "event_limit": 300
+    "window": 4, "site_limit": 3, "remap_limit": 4, "search_limit": 12,
+    "rollout_gates": 0, "event_limit": 100000, "relocation": true
   },
   "variants": [
-    {
-      "policy": "FixedSite"
-    },
-    {
-      "policy": "NextRequestGreedy"
-    },
-    {
-      "policy": "JointScheduler"
-    }
+    {"policy": "FixedSite"},
+    {"policy": "JointScheduler"}
   ]
 }

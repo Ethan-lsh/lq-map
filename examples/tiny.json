@@ -1,15 +1,7 @@
 {
-  "qubits": [
-    "q0",
-    "q1"
-  ],
+  "qubits": ["q0", "q1"],
   "gates": [
-    {
-      "id": "t0",
-      "kind": "T",
-      "qubits": [
-        "q1"
-      ]
-    }
+    {"id": "cx0", "kind": "CX", "qubits": ["q0", "q1"]},
+    {"id": "t0", "kind": "T", "qubits": ["q1"]}
   ]
 }

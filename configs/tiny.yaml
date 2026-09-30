@@ -1,64 +1,15 @@
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "seed": 0,
-  "mode": "space_time",
-  "layout": {
-    "usable": [
-      [
-        0,
-        0
-      ],
-      [
-        1,
-        0
-      ],
-      [
-        2,
-        0
-      ]
-    ],
-    "blocked": []
-  },
-  "placement": {
-    "q0": [
-      1,
-      0
-    ],
-    "q1": [
-      2,
-      0
-    ]
-  },
-  "mscs": {
-    "m0": [
-      0,
-      0
-    ]
-  },
-  "costs": {
-    "produce": 2
-  },
+  "geometry": {"tiles": ["BCBSB", "SBSBS", "BSBSB"]},
+  "placement": {"q0": [1, 2], "q1": [2, 3]},
+  "mscs": {"m0": [0, 1]},
+  "costs": {"cultivate": 2},
   "circuit": "../examples/tiny.json",
   "policy": "JointScheduler",
-  "settings": {
-    "lookahead_depth": 1,
-    "search_limit": 8
-  },
-  "oracle_state_limit": 30000,
+  "settings": {"search_limit": 8},
   "variants": [
-    {
-      "policy": "FixedSite"
-    },
-    {
-      "policy": "NextRequestGreedy"
-    },
-    {
-      "policy": "JointScheduler"
-    },
-    {
-      "name": "oracle",
-      "backend": "oracle"
-    }
-  ],
-  "oracle_horizon": 7
+    {"policy": "FixedSite"},
+    {"policy": "JointScheduler"}
+  ]
 }
