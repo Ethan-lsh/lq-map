@@ -16,9 +16,10 @@
   },
   "mscs": {"m0": [0, 0], "m1": [4, 8]},
   "costs": {
-    "single": 1, "two": 2, "consume": 1, "initialize": 1, "cultivate": 3,
-    "swap": 3, "move": 1, "relocate": 1
+    "single": 1, "phase_gate": 3, "two": 2, "consume": 1, "initialize": 1,
+    "cultivate": 3, "swap": 3, "move": 1, "relocate": 1
   },
+  "timing": {"code_distance": 17, "physical_cycle_us": 1.0},
   "supply": {"success_probability": 1.0},
   "objective": {
     "movement_volume": 1, "operation_volume": 1, "cultivation_volume": 1,

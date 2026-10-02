@@ -148,7 +148,8 @@ A configuration defines:
 | --- | --- |
 | `geometry.tiles` | Rows of `S`/`C`/`B`/`.` characters. |
 | `placement`, `mscs` | Supplied logical-qubit and MSC tile coordinates. |
-| `costs` | Abstract durations: `single`, `two`, `consume`, `initialize`, `cultivate`, `swap`, `move`, `relocate`. |
+| `costs` | Durations in logical cycles (lcycles): `single` (H/X/Z), `phase_gate` (S/Sdg), `two`, `consume`, `initialize`, `cultivate`, `swap`, `move`, `relocate`. Gate defaults follow PureMagic's lcycle accounting (CX 2, S 3, T 1); the rest are modeling assumptions. |
+| `timing` | `code_distance` (default 17) and `physical_cycle_us` (default 1 µs): metadata converting lcycles to microseconds. A logical cycle takes at least `code_distance` physical cycles; the model uses that minimum (17 µs by default). Durations are not rescaled. |
 | `supply` | `success_probability` of each cultivation attempt. |
 | `objective` | Weights for `movement_volume`, `operation_volume`, `cultivation_volume`, `request_wait`, `makespan`. |
 | `mapping` | `supplied` or `demand_aware` initial placement. |
@@ -244,14 +245,15 @@ sizes a brick layout to its qubit count, and compares `FixedSite` with
 
 | File | Contents |
 | --- | --- |
-| `summary.csv` | One row per (case, sample, variant): `status`, `objective`, `makespan`, `swap_count`, `move_count`, `swap_depth`, `movement_volume`, `relocation_count`, `total_request_wait`, `msc_utilization`, `provisioned_area`, `msc_pool_size`, and median `planning_seconds` over repeats. |
-| `raw_data.zip` | `raw_data.jsonl` (`raw_schema_version: 3`): resolved configs (supplied and resolved placement), seeds, samples, all metrics (including policy diagnostics), and operation traces. |
+| `summary.csv` | One row per (case, sample, variant): `status`, `objective`, `makespan` (lcycles), `makespan_us`, `swap_count`, `move_count`, `swap_depth`, `movement_volume`, `relocation_count`, `total_request_wait`, `msc_utilization`, `provisioned_area`, `spacetime_volume` (N × L: provisioned tiles × makespan in lcycles), `spacetime_volume_us` (tile·µs), `msc_pool_size`, and median `planning_seconds` over repeats. |
+| `raw_data.zip` | `raw_data.jsonl` (`raw_schema_version: 4`): resolved configs (supplied and resolved placement), seeds, samples, all metrics (including policy diagnostics), and operation traces. |
 
 Request wait is measured from DAG readiness to consumption start. Duplicate
 (case, sample, repeat, variant) keys and archives from older schemas are rejected,
 never merged or overwritten.
 
-Current versions: model `tile-swap-v1`, schema `3`, evaluation `performance-v4`.
+Current versions: model `tile-swap-v1`, schema `3`, raw schema `4`, metrics `online-v4`,
+evaluation `performance-v5`.
 
 ## Project layout
 

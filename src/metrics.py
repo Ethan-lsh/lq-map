@@ -1,6 +1,8 @@
 """Measurements accumulated directly from simulator events, without trace replay.
 
-Volumes are tile-cycles. Operation counts and volumes are charged when an operation
+Times are lcycles and volumes are tile-lcycles; `*_us` fields convert lcycles with the
+problem's `TimeScale`. `spacetime_volume` is N x L as in PureMagic's volume estimate:
+N provisioned tiles (S + C + B) times L, the realized makespan in lcycles. Operation counts and volumes are charged when an operation
 starts (its duration is fixed then); cultivation outcomes are charged on completion.
 """
 
@@ -19,7 +21,7 @@ from model import (
     Tile,
 )
 
-METRICS_VERSION = "online-v3"
+METRICS_VERSION = "online-v4"
 
 
 @dataclass
@@ -98,6 +100,10 @@ class RunMetrics:
             "circuit_completed": complete,
             "completed_gates": len(state.completed),
             "makespan": horizon,
+            "time_unit": "lcycle",
+            "code_distance": problem.time_scale.code_distance,
+            "lcycle_us": problem.time_scale.lcycle_us,
+            "makespan_us": horizon * problem.time_scale.lcycle_us,
             "objective": self.objective(problem.objective, horizon),
             "operation_counts": dict(sorted(self.counts.items())),
             "operation_cycles": dict(sorted(self.cycles.items())),
@@ -115,7 +121,8 @@ class RunMetrics:
             "provisioned_area": area["total"],
             "area_by_kind": area,
             "msc_pool_size": pool,
-            "provisioned_volume": area["total"] * horizon,
+            "spacetime_volume": area["total"] * horizon,
+            "spacetime_volume_us": area["total"] * horizon * problem.time_scale.lcycle_us,
             "data_resident_volume": len(problem.placement) * horizon,
             "idle_msc_cycles": pool_cycles - busy_msc,
             "msc_utilization": cultivation / pool_cycles if pool_cycles else 0.0,

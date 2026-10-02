@@ -5,6 +5,7 @@
   "placement": {"q0": [1, 2], "q1": [2, 3]},
   "mscs": {"m0": [0, 1]},
   "costs": {"cultivate": 2},
+  "timing": {"code_distance": 17},
   "circuit": "../examples/tiny.json",
   "policy": "JointScheduler",
   "settings": {"search_limit": 8},

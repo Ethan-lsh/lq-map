@@ -29,6 +29,7 @@ from model import (
     Problem,
     SupplyModel,
     Tile,
+    TimeScale,
     tile,
 )
 from mscmap import MODEL_VERSION, SCHEMA_VERSION, __version__
@@ -36,8 +37,8 @@ from policies import PolicySettings, drive, make_policy
 from qiskit_io import load_qasm, qiskit_version
 from sim import Simulator
 
-RAW_SCHEMA_VERSION = 3
-EVALUATION_VERSION = "performance-v4"
+RAW_SCHEMA_VERSION = 4
+EVALUATION_VERSION = "performance-v5"
 
 ASSUMPTIONS = {
     "model": MODEL_VERSION,
@@ -55,8 +56,13 @@ ASSUMPTIONS = {
     "relocation needs an empty C slot and transfers no state",
     "supply": "Bernoulli attempts; failure repeats initialize+cultivate; planning uses "
     "ceil(1/p) attempts and never reads realized outcomes",
-    "timing": "abstract integer cycles; half-open reservations; finishes by operation ID "
-    "before starts",
+    "timing": "integer logical cycles (lcycles); gate defaults follow PureMagic's lcycle "
+    "accounting (CX 2, S/SDG 3, T consume 1); H/X/Z/CZ, cultivation, SWAP, move, and "
+    "relocation durations are modeling assumptions; half-open reservations; finishes by "
+    "operation ID before starts",
+    "time_scale": "physical cycle 1 us by default; a logical cycle takes at least "
+    "code_distance physical cycles and the model uses that minimum (modeling choice), so "
+    "code_distance 17 gives 17 us per lcycle; durations are not rescaled by code_distance",
     "objective": "weighted movement_volume + operation_volume + cultivation_volume "
     "+ request_wait + makespan",
     "magic_gates": "T and T-dagger each consume one magic state; the Clifford difference "
@@ -64,6 +70,9 @@ ASSUMPTIONS = {
     "circuit_import": "OpenQASM files are parsed and decomposed into Clifford+T by Qiskit "
     "(optimization level 1, final measurements removed, barriers ignored); rotation "
     "synthesis precision sets the T count; the resolved config stores the converted gates",
+    "spacetime_volume": "N x L: provisioned tiles (S + C + B, blocked excluded) times the "
+    "realized makespan in lcycles, including SWAP, supply, and resource waits; "
+    "spacetime_volume_us multiplies by lcycle_us",
     "waits": "T dependency readiness to consumption start; supply then access",
     "claim": "abstract scheduling model, not a physically verified protocol",
 }
@@ -90,6 +99,7 @@ TOP_LEVEL_KEYS = {
     "placement",
     "mscs",
     "costs",
+    "timing",
     "supply",
     "objective",
     "mapping",
@@ -225,6 +235,7 @@ def resolve(raw: dict, base: Path = Path("."), sample: int = 0) -> tuple[Problem
         raise ValueError("seed must be an integer")
     circuit = _circuit(raw, base, supplied, seed)
     costs = OperationCosts(**raw.get("costs", {}))
+    time_scale = _time_scale(raw.get("timing", {}))
     supply = _supply(raw.get("supply", {}), seed, sample)
     if supply.deterministic and sample != 0:
         raise ValueError("deterministic supply has a single sample; use --samples 1")
@@ -238,6 +249,7 @@ def resolve(raw: dict, base: Path = Path("."), sample: int = 0) -> tuple[Problem
         costs,
         supply,
         Objective(**raw.get("objective", {})),
+        time_scale,
     )
     settings = PolicySettings(**raw.get("settings", {}))
     policy = raw.get("policy", "JointScheduler")
@@ -255,6 +267,7 @@ def resolve(raw: dict, base: Path = Path("."), sample: int = 0) -> tuple[Problem
         "mscs": _tiles_dict(sites),
         "circuit": circuit.to_dict(),
         "costs": asdict(costs),
+        "timing": {**asdict(time_scale), "unit": "lcycle", "lcycle_us": time_scale.lcycle_us},
         "supply": {
             "success_probability": supply.success_probability,
             "planning_attempts": supply.planning_attempts,
@@ -282,6 +295,23 @@ def _check_config_fields(raw: dict) -> None:
         raise ValueError(f"configuration schema_version must be {SCHEMA_VERSION}")
     if raw.get("model_version", MODEL_VERSION) != MODEL_VERSION:
         raise ValueError(f"model_version must be {MODEL_VERSION}")
+
+
+def _time_scale(raw: dict) -> TimeScale:
+    """`code_distance` and `physical_cycle_us`; derived fields of a resolved config are
+    accepted only when they match."""
+    if not isinstance(raw, dict):
+        raise ValueError("timing must be an object")
+    fields = {k: v for k, v in raw.items() if k not in {"unit", "lcycle_us"}}
+    try:
+        scale = TimeScale(**fields)
+    except TypeError as exc:
+        raise ValueError(f"timing accepts code_distance and physical_cycle_us: {exc}") from exc
+    if raw.get("unit", "lcycle") != "lcycle" or raw.get("lcycle_us", scale.lcycle_us) != (
+        scale.lcycle_us
+    ):
+        raise ValueError("timing.unit must be lcycle and lcycle_us must match the distance")
+    return scale
 
 
 def _geometry(raw: dict) -> Geometry:
@@ -381,6 +411,7 @@ SUMMARY_COLUMNS = (
     "status",
     "objective",
     "makespan",
+    "makespan_us",
     "swap_count",
     "move_count",
     "swap_depth",
@@ -389,6 +420,8 @@ SUMMARY_COLUMNS = (
     "total_request_wait",
     "msc_utilization",
     "provisioned_area",
+    "spacetime_volume",
+    "spacetime_volume_us",
     "msc_pool_size",
     "planning_seconds",
 )

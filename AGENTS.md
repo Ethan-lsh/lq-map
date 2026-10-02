@@ -121,7 +121,11 @@ either paper.
 
 Record assumptions in resolved experiment metadata. When changing resource semantics, update execution, measurement,
 SWAP planning, configurations, and documentation together, and bump `MODEL_VERSION`.
-Keep uncalibrated durations and areas in abstract units. A runnable abstract model
+Durations are integer logical cycles (lcycles); gate defaults follow PureMagic's lcycle
+accounting (CX 2, S/SDG 3, T 1) and the rest are labeled assumptions. `timing`
+(`code_distance`, default 17; `physical_cycle_us`, default 1) converts lcycles to
+microseconds as metadata only, using the minimum of `code_distance` physical cycles
+per logical cycle. Keep uncalibrated durations and areas labeled as such. A runnable abstract model
 is not evidence of physical feasibility.
 
 ## Architecture boundaries
@@ -213,14 +217,15 @@ runs establish observed software behavior, not general superiority.
 Every run writes only `summary.csv` and `raw_data.zip` to its `--output` directory.
 The archive stores resolved configurations (supplied and resolved placements),
 seeds, samples, per-run metrics, and operation traces as typed JSONL records
-(`raw_schema_version: 3`). The summary has one row per (case, sample, variant) with
-median planning time over repeats. A (case, sample, repeat, variant) key must be
+(`raw_schema_version: 4`). The summary has one row per (case, sample, variant) with
+median planning time over repeats. `spacetime_volume` is N × L (provisioned S + C + B
+tiles × realized makespan in lcycles; `spacetime_volume_us` in tile·µs). A (case, sample, repeat, variant) key must be
 unique; duplicates and archives from older schemas are rejected, never merged or
 overwritten. Discard the pending batch on an exception. Do not run concurrent
 writers. Keep large generated results out of source control.
 
-Current versions: model `tile-swap-v1`, schema `3`, metrics `online-v3`,
-evaluation `performance-v4`.
+Current versions: model `tile-swap-v1`, schema `3`, raw schema `4`, metrics `online-v4`,
+evaluation `performance-v5`.
 
 Representative invocations from the repository root:
 

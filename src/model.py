@@ -169,11 +169,22 @@ class ContactRule:
     exchange: bool = False
 
 
+# One-qubit Cliffords charged `phase_gate` instead of `single`.
+PHASE_GATES = frozenset({"S", "SDG"})
+
+
 @dataclass(frozen=True)
 class OperationCosts:
-    """Abstract integer durations (cycles); not calibrated values."""
+    """Integer durations in logical cycles (lcycles); not calibrated values.
+
+    Gate defaults follow PureMagic's lcycle accounting (CX 2, S/SX 3, T 1). H, X, Z,
+    CZ, cultivation, SWAP, move, and relocation have no PureMagic counterpart there
+    (its tableau absorbs H/CZ/Paulis and it routes instead of swapping); their
+    defaults are modeling assumptions.
+    """
 
     single: int = 1
+    phase_gate: int = 3
     two: int = 2
     consume: int = 1
     initialize: int = 1
@@ -188,8 +199,46 @@ class OperationCosts:
             if type(value) is not int or value < 1:
                 raise ValueError(f"costs.{spec.name} must be an integer >= 1")
 
-    def duration(self, action: "Action") -> int:
-        return 0 if action.kind == "assign" else getattr(self, action.kind)
+    def gate_duration(self, gate: Gate) -> int:
+        if gate.is_magic:
+            return self.consume
+        if len(gate.qubits) == 2:
+            return self.two
+        return self.phase_gate if gate.kind in PHASE_GATES else self.single
+
+    def duration(self, action: "Action", gate: Gate | None = None) -> int:
+        """Duration of `action`; gate actions need their circuit `gate`."""
+        if action.kind == "assign":
+            return 0
+        if action.kind in GATE_KINDS:
+            if gate is None or gate.id != action.gate:
+                raise ValueError(f"{action.kind} duration needs its gate {action.gate}")
+            return self.gate_duration(gate)
+        return getattr(self, action.kind)
+
+
+@dataclass(frozen=True)
+class TimeScale:
+    """Conversion of lcycles to wall time; metadata only, durations stay in lcycles.
+
+    A logical cycle takes at least `code_distance` physical cycles; the model uses that
+    minimum (modeling choice), so a 1 us physical cycle at the reference distance 17
+    gives 17 us per lcycle.
+    """
+
+    code_distance: int = 17
+    physical_cycle_us: float = 1.0
+
+    def __post_init__(self) -> None:
+        if type(self.code_distance) is not int or self.code_distance < 1:
+            raise ValueError("timing.code_distance must be an integer >= 1")
+        value = self.physical_cycle_us
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            raise ValueError("timing.physical_cycle_us must be a positive number")
+
+    @property
+    def lcycle_us(self) -> float:
+        return self.code_distance * self.physical_cycle_us
 
 
 @cache
@@ -285,7 +334,7 @@ class SupplyModel:
 class Objective:
     """Weighted execution cost shared by planning and evaluation.
 
-    Volumes are tile-cycles: `movement_volume` (SWAP/move/relocation footprints),
+    Volumes are tile-lcycles: `movement_volume` (SWAP/move/relocation footprints),
     `operation_volume` (local gates and T consumption, including ancilla tiles), and
     `cultivation_volume` (initialize + cultivate, retries included). `request_wait` is
     the summed T wait from readiness to consumption start; `makespan` is final time.
@@ -395,6 +444,7 @@ class Problem:
     costs: OperationCosts
     supply: SupplyModel
     objective: Objective
+    time_scale: TimeScale = TimeScale()
 
     def __post_init__(self) -> None:
         if not self.sites or any(not isinstance(k, str) or not k for k in self.sites):
@@ -443,7 +493,7 @@ class Problem:
         return "single" if len(gate.qubits) == 1 else "two"
 
     def initial_state(self) -> SystemState:
-        durations = {g.id: getattr(self.costs, self.gate_kind(g)) for g in self.circuit.gates}
+        durations = {g.id: self.costs.gate_duration(g) for g in self.circuit.gates}
         waiting = {g.id: len(g.predecessors) for g in self.circuit.gates}
         return SystemState(
             placement=dict(self.placement),

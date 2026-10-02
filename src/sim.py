@@ -205,7 +205,8 @@ class Simulator:
             self._assign(action)
             return
         state = self.state
-        duration = self.problem.costs.duration(action)
+        gate = self.problem.gates.get(action.gate) if action.gate else None
+        duration = self.problem.costs.duration(action, gate)
         operation = ActiveOperation(state.next_operation, action, state.time, state.time + duration)
         state.next_operation += 1
         state.active.append(operation)
