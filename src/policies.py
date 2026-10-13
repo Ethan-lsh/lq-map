@@ -2,9 +2,9 @@
 
 Every policy returns a `Plan` of actions to start at the current decision point.
 All policies share `base_step`: a gate executes only through a local contact, and a
-gate whose operands are not in contact starts the next SWAP/move of a fewest-exchange
-plan. There is no routing path or remote-operation fallback. Policies differ in how
-they choose MSC assignments, relocations, waiting, and extra remaps; candidate plans
+gate whose operands are not in contact starts the next exchange (SWAP) of a
+fewest-exchange plan. There is no routing path or remote-operation fallback. Policies differ in how
+they choose MSC relocations, waiting, and extra remaps; candidate plans
 are evaluated on planning snapshots only.
 """
 
@@ -16,10 +16,18 @@ from time import perf_counter
 from typing import Any
 
 from ir import Gate
-from model import RELOCATABLE_PHASES, Action, Phase, Problem, SystemState, Tile, contact_rule
+from model import (
+    Action,
+    ContactRule,
+    Phase,
+    Problem,
+    SystemState,
+    Tile,
+    contact_rule,
+)
 from sim import Simulator
 from swaps import (
-    best_arrangement,
+    contact_pairs,
     exchange_action,
     exchange_options,
     exchange_tree,
@@ -33,8 +41,6 @@ from swaps import (
 @dataclass(frozen=True)
 class PolicySettings:
     window: int = 4
-    site_limit: int = 3
-    remap_limit: int = 4
     search_limit: int = 12
     rollout_gates: int = 0
     event_limit: int = 100000
@@ -154,19 +160,23 @@ def gate_action(sim: Simulator, gate: Gate) -> Action | None:
     return Action(kind, tiles, contact, msc, gate.id)
 
 
-def arrange(sim: Simulator, gate: Gate, protected: Iterable[Tile] = ()) -> Action | None:
-    """Next SWAP/move of the fewest-exchange plan that brings the gate's patches into
-    local contact (either or both operands may move; a T's output stays). MSC sites and
-    `protected` data never move. None if the patches already touch, an operand is busy,
-    or no plan exists."""
+def arrange(sim: Simulator, gate: Gate, protected: Iterable[Tile] = ()) -> tuple[Action, ...]:
+    """Next exchange of each operand that moves in the fewest-exchange plan bringing the
+    gate's patches into local contact (a T's output stays). When both operands move,
+    their first exchanges are proposed together so the two halves of the plan proceed
+    concurrently; the simulator still admits each only if its tiles are free. MSC sites
+    and `protected` data never move. Empty if the patches already touch, an operand is
+    busy, or no plan exists."""
     state, problem = sim.state, sim.problem
     tiles = endpoints(state, gate)
     if tiles is None or len(tiles) < 2:
-        return None
+        return ()
     if any(t in state.reserved for t in tiles[: len(gate.qubits)]):
-        return None  # an operand is busy; replan at a later decision point
+        return ()  # an operand is busy; replan at a later decision point
     fixed = {m.site for m in state.mscs.values()} | set(protected)
-    movable = movable_endpoints(gate)
+    # An operand already protected for an earlier ready gate (commuting gates can share
+    # a qubit) stays put like a T's output; only the other operand may move.
+    movable = [i for i in movable_endpoints(gate) if tiles[i] not in fixed]
     trees = [
         exchange_tree(problem.geometry, t, fixed | {tiles[1 - i]})
         if i in movable
@@ -174,12 +184,53 @@ def arrange(sim: Simulator, gate: Gate, protected: Iterable[Tile] = ()) -> Actio
         for i, t in enumerate(tiles)
     ]
     rule = contact_rule(problem.gate_kind(gate), gate.kind)
-    best = best_arrangement(problem.geometry, rule, (trees[0][1], trees[1][1]))
+    best = _disjoint_plan(problem, rule, tiles, trees)
     if best is None or best[0] == 0:
-        return None
-    moving = 0 if trees[0][1][best[1]] > 0 else 1
-    step = _first_exchange(trees[moving][0], tiles[moving], best[1 + moving])
-    return exchange_action(problem, state, tiles[moving], step)
+        return ()
+    actions = []
+    for moving in (0, 1):
+        target = best[1 + moving]
+        if trees[moving][1][target] > 0:
+            step = _first_exchange(trees[moving][0], tiles[moving], target)
+            action = exchange_action(problem, state, tiles[moving], step)
+            if action is not None:
+                actions.append(action)
+    if len(actions) == 2 and set(actions[0].footprint) & set(actions[1].footprint):
+        return tuple(actions[:1])  # the two halves would collide; advance one at a time
+    return tuple(actions)
+
+
+def _tree_path(parents: dict[Tile, Tile | None], target: Tile) -> list[Tile]:
+    """Slots from `target` back to the tree root, both included."""
+    path = [target]
+    while parents[path[-1]] is not None:
+        path.append(parents[path[-1]])
+    return path
+
+
+def _disjoint_plan(
+    problem: Problem,
+    rule: ContactRule,
+    tiles: tuple[Tile, ...],
+    trees: list[tuple[dict[Tile, Tile | None], dict[Tile, int]]],
+) -> tuple[int, Tile, Tile] | None:
+    """Fewest-exchange contact pair whose two exchange paths share no slot.
+
+    Each operand's tree is built independently, so the overall minimum can route one
+    operand through the other's destination; executing such a plan raises its own
+    cost and the next decision undoes the step. With disjoint paths every step lowers
+    the remaining count by one. Ties break by stable pair order.
+    """
+    depths = (trees[0][1], trees[1][1])
+    ranked = sorted(
+        (depths[0][x] + depths[1][y], x, y)
+        for x, y in contact_pairs(problem.geometry, rule)
+        if x in depths[0] and y in depths[1]
+    )
+    for total, x, y in ranked:
+        if not set(_tree_path(trees[0][0], x)) & set(_tree_path(trees[1][0], y)):
+            return total, x, y
+    return None
 
 
 def _first_exchange(parents: dict[Tile, Tile | None], origin: Tile, target: Tile) -> Tile:
@@ -209,7 +260,8 @@ def base_step(sim: Simulator, hold: Iterable[str] = ()) -> list[Action]:
     for gate_id in sorted(state.ready, key=problem.gate_index.__getitem__):
         gate = problem.gates[gate_id]
         if not attempt(gate_action(sim, gate)):
-            attempt(arrange(sim, gate, protected))
+            for action in arrange(sim, gate, protected):
+                attempt(action)
         if endpoints(state, gate) is not None:  # a T without an MSC cannot act yet
             protected.update(state.placement[q] for q in gate.qubits)
     return started
@@ -228,27 +280,22 @@ def start_lifecycle(sim: Simulator) -> None:
 # Candidate generation -----------------------------------------------------------
 
 
-def assignment_candidates(
-    sim: Simulator, requests: Iterable[str], settings: PolicySettings
-) -> tuple[list[Candidate], list[Candidate]]:
-    """(retain, relocate) candidates for request/idle-MSC pairs."""
+def relocation_candidates(sim: Simulator, requests: Iterable[str]) -> list[Candidate]:
+    """Relocate an idle MSC to a C slot closer to a request's data, then assign it."""
     state = sim.state
-    retain, relocate = [], []
+    options = []
     for request in requests:
         for msc in idle_mscs(state):
             assign = Action("assign", msc=msc, gate=request)
-            retain.append(Candidate(f"assign {request}->{msc}", (assign,)))
-            if not settings.relocation:
-                continue
-            for site in _candidate_sites(sim, request, msc, settings.site_limit):
+            for site in _candidate_sites(sim, request, msc):
                 move = relocation_action(state, msc, site)
-                relocate.append(
+                options.append(
                     Candidate(f"relocate {msc}->{site}; assign {request}", (move, assign))
                 )
-    return retain, relocate
+    return options
 
 
-def _candidate_sites(sim: Simulator, request: str, msc: str, limit: int) -> list[Tile]:
+def _candidate_sites(sim: Simulator, request: str, msc: str) -> list[Tile]:
     """Empty C slots that the request's data reaches in strictly fewer SWAPs, best first."""
     state, problem = sim.state, sim.problem
     current = consume_distance(problem, state, request, state.mscs[msc].site)
@@ -258,13 +305,13 @@ def _candidate_sites(sim: Simulator, request: str, msc: str, limit: int) -> list
         if state.msc_at(site) is None and site not in state.data_at
     )
     better = [site for distance, site in ranked if distance < current]
-    return [s for s in better if sim.can_start(relocation_action(state, msc, s))][:limit]
+    return [s for s in better if sim.can_start(relocation_action(state, msc, s))]
 
 
 def remap_candidates(
     sim: Simulator, requests: Iterable[str], settings: PolicySettings
 ) -> list[Candidate]:
-    """Single SWAP/moves that shorten an upcoming operation's SWAP distance, including
+    """Single exchanges that shorten an upcoming operation's SWAP distance, including
     gates that are not ready yet (pre-positioning from future demand)."""
     state, problem = sim.state, sim.problem
     options: dict[Action, tuple[int, str]] = {}
@@ -278,7 +325,7 @@ def remap_candidates(
                 if after < before:
                     score = (after - before, gate.id)
                     options[action] = min(options.get(action, score), score)
-    ranked = sorted(options, key=lambda a: (options[a], repr(a)))[: settings.remap_limit]
+    ranked = sorted(options, key=lambda a: (options[a], repr(a)))
     return [Candidate(f"remap {a.kind} {a.tiles} for {options[a][1]}", (a,)) for a in ranked]
 
 
@@ -386,25 +433,25 @@ class FixedSite(Policy):
 
 
 class JointScheduler(Policy):
-    """Window planning of assignments, waiting, relocation, and extra SWAP remaps,
-    ranked by the objective of a base-rule rollout of the remaining (or bounded)
-    circuit."""
+    """Candidates: the base rule (`default`), MSC relocation before assignment, one extra
+    SWAP remap toward upcoming demand, or waiting with an idle MSC. Each is ranked by
+    the objective of a base-rule rollout of the remaining (or bounded) circuit."""
 
     def _propose(self, sim: Simulator) -> Plan:
         state = sim.state
         window = assignable_requests(sim.problem, state, self.settings.window)
-        retain, relocate = assignment_candidates(sim, window, self.settings)
-        hold = [Candidate(f"wait {m}", hold=frozenset({m})) for m in idle_mscs(state)]
-        idle_moves = self._idle_relocations(sim, window)
+        relocate = relocation_candidates(sim, window) if self.settings.relocation else []
         remaps = remap_candidates(sim, window, self.settings)
-        candidates = [Candidate("default"), *interleave(retain, relocate, remaps, hold, idle_moves)]
+        hold = [Candidate(f"wait {m}", hold=frozenset({m})) for m in idle_mscs(state)]
+        candidates = [Candidate("default"), *interleave(relocate, remaps, hold)]
         return self._choose(sim, candidates, horizon_stop(sim, self.settings))
 
     def _choose(self, sim: Simulator, candidates: list[Candidate], stop: StopCondition) -> Plan:
         """Lowest rollout cost; the first candidate (the default) wins exact ties."""
         candidates = candidates[: self.settings.search_limit]
         if len(candidates) == 1:
-            return Plan(tuple(base_step(sim.snapshot(), candidates[0].hold)))
+            hold = candidates[0].hold
+            return Plan(tuple(base_step(sim.snapshot(), hold)))
         self.decisions += 1
         best: tuple[Candidate, RolloutResult] | None = None
         for candidate in candidates:
@@ -416,22 +463,6 @@ class JointScheduler(Policy):
             return Plan(tuple(base_step(sim.snapshot())))
         self.labels[best[0].kind] += 1
         return Plan(best[1].first_step)
-
-    def _idle_relocations(self, sim: Simulator, window: list[str]) -> list[Candidate]:
-        """Move an idle or assigned-but-uninitialized MSC toward upcoming demand."""
-        if not self.settings.relocation or not window:
-            return []
-        state = sim.state
-        options = []
-        for msc_id, msc in sorted(state.mscs.items()):
-            if msc.phase not in RELOCATABLE_PHASES or msc.site in state.reserved:
-                continue
-            request = msc.request or window[0]
-            hold = frozenset({msc_id}) if msc.phase == Phase.IDLE else frozenset()
-            for site in _candidate_sites(sim, request, msc_id, self.settings.site_limit):
-                move = relocation_action(state, msc_id, site)
-                options.append(Candidate(f"premove {msc_id}->{site}", (move,), hold))
-        return options
 
 
 POLICIES = {p.__name__: p for p in (FixedSite, JointScheduler)}

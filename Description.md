@@ -14,7 +14,7 @@ magic-state patch. The execution model uses no lattice-surgery routing paths.
 
 Use future Clifford operations and T-state demand to jointly determine initial
 placement, idle MSC relocation, request assignment, and runtime data remapping.
-Evaluate the effects of initial placement and runtime remapping on makespan,
+Evaluate the effects of initial placement and runtime remapping on execution time (lcycles until the last operation finishes),
 area, and spacetime volume, including SWAP and scheduling overhead. Determine
 when a limited reusable MSC pool improves utilization without excessive supply
 delays. SWAP count is one cost metric, not the sole optimization objective.
@@ -130,7 +130,7 @@ reproduction of either paper.
 
 | Category | Measurements |
 | --- | --- |
-| Execution | Completion status, makespan, planning time |
+| Execution | Completion status, execution lcycles, planning time |
 | Movement | SWAP count, depth, implementation cost, and resource occupancy |
 | Space | Total provisioned area and spacetime volume, including idle capacity, local ancillas, and junctions |
 | MSC service | Resource utilization, relocation time, production/retry time, output holding, and request waiting |

@@ -11,7 +11,7 @@ from pathlib import Path
 
 __version__ = "0.3.0"
 SCHEMA_VERSION = 3
-MODEL_VERSION = "tile-swap-v1"
+MODEL_VERSION = "tile-swap-v3"
 
 
 # TODO: 실험 케이스를 일반 양자회로로 변경 (Flow-based, puremagic 논문 참조)

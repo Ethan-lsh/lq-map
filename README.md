@@ -20,12 +20,12 @@ interactions and T-state demand drive:
 - assignment of MSCs to T requests, and
 - runtime data remapping.
 
-Experiments measure how initial placement and runtime remapping affect makespan,
+Experiments measure how initial placement and runtime remapping affect execution time (`execution_lcycles`),
 area, and spacetime volume (including SWAP and scheduling overhead), and when a
 limited reusable MSC pool improves utilization without excessive supply delay.
 
 > [!NOTE]
-> This is an abstract scheduling model (`tile-swap-v1`). Durations and areas are
+> This is an abstract scheduling model (`tile-swap-v3`). Durations and areas are
 > uncalibrated abstract units, the SWAP and local-contact protocols are not
 > specified, and results do not establish physical feasibility or general policy
 > superiority.
@@ -108,31 +108,38 @@ python3 -m mscmap run --config configs/experiment.yaml --variant JointScheduler 
 - **Local operations**: CX needs an L-shaped ancilla (control Z side, target X side);
   CZ and T consumption need Z-Z contact (consumption may be direct). No path connects
   distant patches.
-- **SWAP/move**: exchange in-line cardinal neighbors (never diagonal) using one
-  auxiliary bus tile, and update the logical-to-physical mapping. There is no
+- **Exchange (SWAP)**: one operation swaps a data patch with an in-line cardinal
+  neighbor slot (never diagonal), or moves it there if empty, using one auxiliary bus
+  tile and one duration, and update the logical-to-physical mapping. There is no
   mandatory restoration.
 - **MSCs**: relocate only while idle, before initialization, to an empty `C` slot.
   Produced states never move and stay owned by one request until consumed; the data
   patch is SWAPped next to them.
-- **Supply**: cultivation may fail (`supply.success_probability`); retries repeat
-  initialize + cultivate. Planning never sees realized outcomes.
+- **Supply**: `supply.distribution` is `bernoulli` (default; attempts fail with
+  `1 - success_probability` and retries repeat initialize + cultivate) or
+  `exponential`, PureMagic's stochastic cultivation: each state takes an exponential
+  sample with `rate` λ per lcycle (default 0.0387396, mean ≈ 26 lcycles), rounded to
+  the nearest lcycle, with injection folded in (`initialize` takes 0 lcycles). Unlike
+  PureMagic, cultivation is never interrupted. Planning never sees realized outcomes;
+  it assumes `round(1/λ)` lcycles (heuristic).
 
 ## Policies
 
 All policies share the simulator, the legality/cost model, the SWAP-based base rule
 (execute in contact, otherwise start the next exchange of a fewest-SWAP plan), and
 measurements. Candidates are scored by the configured `objective` (movement,
-local-operation and cultivation volume, request wait, and makespan by default),
+local-operation and cultivation volume, request wait, and `execution_lcycles` by default),
 never by SWAP count alone. The base rule is always a candidate and wins ties.
 
 | Policy | Decision rule |
 | --- | --- |
 | `FixedSite` | Fixed MSC sites; data SWAPped into contact as gates become ready. |
-| `JointScheduler` | Plans assignments, waiting, MSC relocation, and SWAP pre-positioning for upcoming gates by rollout cost of the remaining (or bounded) circuit. |
+| `JointScheduler` | Picks the base rule, an MSC relocation, one SWAP pre-positioning step for an upcoming gate, or waiting, by rollout cost of the remaining (or bounded) circuit. |
 
-`JointScheduler` search is bounded by `settings`: `window`, `site_limit`,
-`remap_limit`, `search_limit`, `rollout_gates` (0 = remaining circuit),
-`event_limit`, and `relocation`. Bounded search can miss schedules; a stalled or
+`JointScheduler` search is bounded by `settings`: `window`, `search_limit`,
+`rollout_gates` (0 = remaining circuit), `event_limit`, and `relocation`. When both
+operands of a plan move, they advance together on slot-disjoint paths.
+Bounded search can miss schedules; a stalled or
 limited run is reported as such, not as infeasible.
 
 ## Configuration
@@ -148,10 +155,11 @@ A configuration defines:
 | --- | --- |
 | `geometry.tiles` | Rows of `S`/`C`/`B`/`.` characters. |
 | `placement`, `mscs` | Supplied logical-qubit and MSC tile coordinates. |
-| `costs` | Durations in logical cycles (lcycles): `single` (H/X/Z), `phase_gate` (S/Sdg), `two`, `consume`, `initialize`, `cultivate`, `swap`, `move`, `relocate`. Gate defaults follow PureMagic's lcycle accounting (CX 2, S 3, T 1); the rest are modeling assumptions. |
+| `costs` | Durations in logical cycles (lcycles): `single` (H/X/Z), `phase_gate` (S/Sdg), `two`, `consume`, `initialize`, `cultivate`, `exchange`, `relocate`. Gate defaults follow PureMagic's lcycle accounting (CX 2, S 3, T 1); the rest are modeling assumptions. |
+| `circuit_model` | `dependencies`: `commutation` (default; gates that commute on every shared qubit keep no edge) or `program_order`; `pauli_frame` (default true): X/Z tracked classically instead of executed (T/TDG swapped where needed; the record is stored in the resolved config). |
 | `timing` | `code_distance` (default 17) and `physical_cycle_us` (default 1 µs): metadata converting lcycles to microseconds. A logical cycle takes at least `code_distance` physical cycles; the model uses that minimum (17 µs by default). Durations are not rescaled. |
-| `supply` | `success_probability` of each cultivation attempt. |
-| `objective` | Weights for `movement_volume`, `operation_volume`, `cultivation_volume`, `request_wait`, `makespan`. |
+| `supply` | `distribution`: `bernoulli` (default) with `success_probability` per attempt, or `exponential` with `rate` λ per lcycle (PureMagic; `costs.initialize`/`cultivate` unused). |
+| `objective` | Weights for `movement_volume`, `operation_volume`, `cultivation_volume`, `request_wait`, `execution_lcycles`. |
 | `mapping` | `supplied` or `demand_aware` initial placement. |
 | `circuit` **or** `workload` | Exactly one: a gate list (inline, `.json`, or `.qasm`) or a seeded synthetic workload. |
 | `policy`, `settings` | Default policy and its search bounds. |
@@ -237,6 +245,36 @@ sizes a brick layout to its qubit count, and compares `FixedSite` with
 | `--max-gates` | none | Skip larger converted circuits; skipped ones are listed in the archive manifest. |
 | `--repeats`, `--samples` | 1 | Timing repeats and stochastic samples. |
 
+### PureMagic comparator
+
+```bash
+python3 examples/puremagic_compare.py --output results/pm --puremagic ../PureMagic \
+  --qasm examples/adder4.qasm --size medium --circuit simon_n6 --samples 5
+```
+
+[examples/puremagic_compare.py](examples/puremagic_compare.py) compares mscmap with
+the external [PureMagic](https://github.com/BQSKit/PureMagic) scheduler under matched
+constraints. Build it first (`cargo build --release --bin transpile --bin puremagic`;
+needs Rust, a C toolchain, `m4`, and `git submodule update --init`). Both models get
+the same resolved Clifford+T gate list, the same grid and area N (PureMagic's default
+bus-routing topology with `--msc-count` magic nodes; mscmap places C slots on the
+magic nodes, S slots holding the same qubits on the data nodes, and B/empty S tiles in
+the brick pattern elsewhere), the same fixed magic-state resources, the same
+exponential cultivation (`--lambda`, default 0.0387396 per lcycle; `--samples N` runs
+mscmap samples 0..N-1 and PureMagic seeds 1..N), explicit Cliffords at the same lcycle
+costs (PureMagic transpile weight limit `--width`, default 1), and no T-injection
+failures (`-F`). PureMagic still absorbs every Clifford after the last T into
+final measurement products (a T-free circuit runs no Clifford) and routes multi-patch
+Pauli products over bus paths, while mscmap executes every gate locally after SWAPs; results compare those models and
+are not a reproduction of the PureMagic paper.
+
+Both volumes are N × L: N = provisioned tiles (equal to PureMagic's node count here)
+and L = `execution_lcycles`, the lcycles from time 0 until the last operation finishes
+(PureMagic: scheduled logical cycles). The output holds `mscmap/` (`summary.csv`,
+`raw_data.zip`), `puremagic/<case>/` (QASM, `.trans`, topology, one log per seed),
+`comparison.csv` (one row per model and sample), `comparison_median.csv`, and
+`manifest.json` (PureMagic commit and flags).
+
 > [!TIP]
 > Circuits with arbitrary rotations can grow to 10⁴–10⁵ Clifford+T gates under
 > Qiskit's synthesis. Use `--max-gates` to keep benchmark runs short.
@@ -245,15 +283,16 @@ sizes a brick layout to its qubit count, and compares `FixedSite` with
 
 | File | Contents |
 | --- | --- |
-| `summary.csv` | One row per (case, sample, variant): `status`, `objective`, `makespan` (lcycles), `makespan_us`, `swap_count`, `move_count`, `swap_depth`, `movement_volume`, `relocation_count`, `total_request_wait`, `msc_utilization`, `provisioned_area`, `spacetime_volume` (N × L: provisioned tiles × makespan in lcycles), `spacetime_volume_us` (tile·µs), `msc_pool_size`, and median `planning_seconds` over repeats. |
-| `raw_data.zip` | `raw_data.jsonl` (`raw_schema_version: 4`): resolved configs (supplied and resolved placement), seeds, samples, all metrics (including policy diagnostics), and operation traces. |
+| `summary.csv` | One row per (case, sample, variant): `status`, `objective`, `execution_lcycles` (lcycles from time 0 until the last operation finishes), `execution_us`, `exchange_count`, `exchange_depth`, `movement_volume`, `relocation_count`, `total_request_wait`, `msc_utilization`, `provisioned_area`, `spacetime_volume` (N × L: provisioned tiles × `execution_lcycles`), `spacetime_volume_us` (tile·µs), `msc_pool_size`, and median `planning_seconds` over repeats. |
+| `raw_data.zip` | `raw_data.jsonl` (`raw_schema_version: 7`): resolved configs (supplied and resolved placement), seeds, samples, all metrics (including policy diagnostics), and operation traces. |
 
 Request wait is measured from DAG readiness to consumption start. Duplicate
-(case, sample, repeat, variant) keys and archives from older schemas are rejected,
-never merged or overwritten.
+(case, sample, repeat, variant) keys are rejected. An archive from an older raw schema
+is never merged: a completed batch replaces it (with a warning), while a failed batch
+leaves it untouched; an archive from a newer schema is rejected.
 
-Current versions: model `tile-swap-v1`, schema `3`, raw schema `4`, metrics `online-v4`,
-evaluation `performance-v5`.
+Current versions: model `tile-swap-v3`, schema `3`, raw schema `7`, metrics `online-v6`,
+evaluation `performance-v8`.
 
 ## Project layout
 

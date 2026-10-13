@@ -11,7 +11,7 @@ and T-state extraction from a magic-state patch; the execution model has no
 lattice-surgery routing paths. Future Clifford operations and T-state demand jointly
 determine initial placement, idle MSC relocation, request assignment, and runtime
 data remapping. Experiments evaluate the effects of initial placement and runtime
-remapping on makespan, area, and spacetime volume (including SWAP and scheduling
+remapping on execution time (`execution_lcycles`), area, and spacetime volume (including SWAP and scheduling
 overhead), and when a limited reusable MSC pool improves utilization without
 excessive supply delays.
 
@@ -64,10 +64,10 @@ unrelated services, interfaces, dependencies, or external integrations.
 
 - No routing corridors, remote paths, or remote-operation fallbacks. Every two-patch
   operation uses a local contact (direct, or one shared ancilla tile); distant
-  operands are brought into contact only by explicit SWAP/move sequences.
+  operands are brought into contact only by explicit exchange (SWAP) sequences.
 - Evaluate candidates by a documented execution cost with configurable weights
   (`objective`: movement volume, local-operation volume, cultivation volume, request
-  wait, makespan). SWAP count is one metric, never the sole objective. There is no
+  wait, `execution_lcycles`). SWAP count is one metric, never the sole objective. There is no
   circuit completion deadline.
 - MSC relocation happens only while the resource is idle, before initialization or
   cultivation. Never move, cancel, or restart active cultivation. Retaining the
@@ -76,9 +76,13 @@ unrelated services, interfaces, dependencies, or external integrations.
   until consumption; the data patch is brought into contact with it. The MSC becomes
   reusable afterward. No duplication or discard.
 - Keep logical-qubit IDs, tile coordinates, MSC IDs, and produced-state IDs distinct.
-- SWAP and move change data placement, never the logical operands of circuit gates.
+- Exchanges (SWAPs) change data placement, never the logical operands of circuit gates.
   Track identities through every exchange; later operations use the updated mapping.
   No mandatory restoration.
+- Dependencies come from commutation (`circuit_model.dependencies`, default
+  `commutation`; `program_order` keeps per-qubit input order). Pauli-frame tracking
+  of X/Z (`circuit_model.pauli_frame`, default on) is a labeled modeling choice and
+  only swaps T/TDG, whose costs are equal; no other gate changes.
 - Schedule from actual DAG readiness and resource availability. Future-demand
   preparation may begin early, but consumption requires both a ready request and an
   available state. Estimates never replace execution preconditions.
@@ -110,8 +114,9 @@ either paper.
   legality and cost model shared by SWAP planning, policies, and the simulator. Keep
   `OPERATION_CONTRACTS` (preconditions, reserved tiles, effects) in sync with
   `Simulator.check`.
-- SWAP/move exchange in-line cardinal neighbors (up, down, left, right; never
-  diagonal) and reserve one auxiliary bus tile; the physical protocol is unspecified
+- One `exchange` operation covers SWAP and a move into an empty slot: in-line
+  cardinal neighbors (up, down, left, right; never diagonal), one auxiliary bus
+  tile, and one duration (`costs.exchange`); the physical protocol is unspecified
   and must stay labeled as such. MSC sites and held outputs never move.
 - An MSC can operate at any `C` slot; relocation needs an empty `C` slot and
   transfers no state. State this assumption wherever it matters.
@@ -165,9 +170,11 @@ finishes. Use stable IDs and deterministic tie breakers. Detect stalls without
 infinite loops and expose diagnostic reasons. Commit legal actions and replan at
 each decision point, preserving existing reservations and active cultivation.
 
-Stochastic cultivation: declare the supply model and retry cost. Realized outcomes
-depend only on (seed, sample, MSC, generation, attempt); planning must not access
-them. Keep stochastic samples separate from timing repetitions. Deterministic
+Stochastic cultivation: declare the supply model and retry cost
+(`supply.distribution`: `bernoulli` attempts, or PureMagic's `exponential` production
+time with `rate` λ per lcycle, rounded, never interrupted). Realized outcomes, including
+sampled durations, depend only on (seed, sample, MSC, generation, attempt); planning
+must not access them (snapshots replace sampled cultivation ends by the estimate). Keep stochastic samples separate from timing repetitions. Deterministic
 reference runs (`success_probability: 1`) remain supported.
 
 ## Policies
@@ -175,15 +182,17 @@ reference runs (`success_probability: 1`) remain supported.
 | Policy | Role |
 | --- | --- |
 | `FixedSite` | Fixed MSC sites; data SWAPped into contact by the base rule |
-| `JointScheduler` | Joint planning of MSC assignment, relocation, waiting, and SWAP pre-positioning using future demand |
+| `JointScheduler` | Chooses among the base rule, MSC relocation, one SWAP pre-positioning step, or waiting, using future demand |
 
 All policies use SWAP-based remapping, the same local execution rules, and the same
 measurements; they differ only in planning. The shared base rule executes a ready
 gate in contact, otherwise starts the next exchange of its fewest-SWAP plan (either
-or both operands may move), protecting operands of earlier ready gates. The base
+or both operands may move; both advance together, and the two operand paths must be
+slot-disjoint), protecting operands of earlier ready gates, which
+never move for later gates. The base
 rule is always a candidate and wins exact ties. Use bounded lookahead with
-configurable limits (`window`, `site_limit`, `remap_limit`, `search_limit`,
-`rollout_gates`, `event_limit`, `relocation`). Bounded search can miss schedules;
+configurable limits (`window`, `search_limit`, `rollout_gates`, `event_limit`,
+`relocation`). Bounded search can miss schedules;
 report stalled or limited runs without claiming infeasibility or introducing a
 remote-operation fallback. Legacy names `LookaheadJoint`,
 `ShortestPathRelocation`, and the removed `NextRequestGreedy` are rejected with a
@@ -217,15 +226,16 @@ runs establish observed software behavior, not general superiority.
 Every run writes only `summary.csv` and `raw_data.zip` to its `--output` directory.
 The archive stores resolved configurations (supplied and resolved placements),
 seeds, samples, per-run metrics, and operation traces as typed JSONL records
-(`raw_schema_version: 4`). The summary has one row per (case, sample, variant) with
+(`raw_schema_version: 7`). The summary has one row per (case, sample, variant) with
 median planning time over repeats. `spacetime_volume` is N × L (provisioned S + C + B
-tiles × realized makespan in lcycles; `spacetime_volume_us` in tile·µs). A (case, sample, repeat, variant) key must be
-unique; duplicates and archives from older schemas are rejected, never merged or
-overwritten. Discard the pending batch on an exception. Do not run concurrent
+tiles × realized `execution_lcycles`; `spacetime_volume_us` in tile·µs). A (case, sample, repeat, variant) key must be
+unique; duplicates are rejected. Archives from older raw schemas are never merged: a
+completed batch replaces them with a warning (newer schemas are rejected). Discard the
+pending batch on an exception, leaving the existing archive untouched. Do not run concurrent
 writers. Keep large generated results out of source control.
 
-Current versions: model `tile-swap-v1`, schema `3`, raw schema `4`, metrics `online-v4`,
-evaluation `performance-v5`.
+Current versions: model `tile-swap-v3`, schema `3`, raw schema `7`, metrics `online-v6`,
+evaluation `performance-v8`.
 
 Representative invocations from the repository root:
 

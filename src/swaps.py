@@ -1,7 +1,7 @@
 """SWAP planning under the shared local contact rules: contacts, exchanges, paths.
 
 Nothing here constructs a path between distant operands. A nonlocal gate becomes
-executable only after a sequence of single SWAP/move exchanges brings its operands
+executable only after a sequence of single exchanges (SWAPs) brings its operands
 into a local contact.
 """
 
@@ -44,9 +44,9 @@ def live_contact(
 
 @cache
 def exchange_neighbors(geometry: Geometry, origin: Tile) -> tuple[Tile, ...]:
-    """Slots one SWAP/move away: in-line cardinal neighbors, adjacent or across one
+    """Slots one exchange away: in-line cardinal neighbors, adjacent or across one
     junction tile, that have an auxiliary tile."""
-    rule = contact_rule("swap")
+    rule = contact_rule("exchange")
     candidates = []
     for side in SIDE_OFFSETS:
         near = geometry.neighbor(origin, side)
@@ -133,10 +133,9 @@ def gate_distance(problem: Problem, gate: Gate, tiles: tuple[Tile, ...]) -> int:
 def exchange_action(
     problem: Problem, state: SystemState, origin: Tile, destination: Tile
 ) -> Action | None:
-    """SWAP (occupied destination) or move (empty destination) with a free junction."""
-    kind = "swap" if destination in state.data_at else "move"
-    contact = live_contact(problem, state, kind, (origin, destination))
-    return Action(kind, (origin, destination), contact) if contact is not None else None
+    """Exchange with a free auxiliary tile (SWAP if the destination holds data)."""
+    contact = live_contact(problem, state, "exchange", (origin, destination))
+    return Action("exchange", (origin, destination), contact) if contact is not None else None
 
 
 def exchange_options(problem: Problem, state: SystemState, qubit: str) -> Iterator[Action]:

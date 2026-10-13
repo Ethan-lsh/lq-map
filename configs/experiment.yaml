@@ -17,13 +17,13 @@
   "mscs": {"m0": [0, 0], "m1": [4, 8]},
   "costs": {
     "single": 1, "phase_gate": 3, "two": 2, "consume": 1, "initialize": 1,
-    "cultivate": 3, "swap": 3, "move": 1, "relocate": 1
+    "cultivate": 3, "exchange": 3, "relocate": 1
   },
   "timing": {"code_distance": 17, "physical_cycle_us": 1.0},
   "supply": {"success_probability": 1.0},
   "objective": {
     "movement_volume": 1, "operation_volume": 1, "cultivation_volume": 1,
-    "request_wait": 1, "makespan": 1
+    "request_wait": 1, "execution_lcycles": 1
   },
   "mapping": "supplied",
   "workload": {
@@ -32,7 +32,7 @@
   },
   "policy": "JointScheduler",
   "settings": {
-    "window": 4, "site_limit": 3, "remap_limit": 4, "search_limit": 12,
+    "window": 4, "search_limit": 12,
     "rollout_gates": 0, "event_limit": 100000, "relocation": true
   },
   "variants": [

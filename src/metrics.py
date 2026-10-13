@@ -2,7 +2,8 @@
 
 Times are lcycles and volumes are tile-lcycles; `*_us` fields convert lcycles with the
 problem's `TimeScale`. `spacetime_volume` is N x L as in PureMagic's volume estimate:
-N provisioned tiles (S + C + B) times L, the realized makespan in lcycles. Operation counts and volumes are charged when an operation
+N provisioned tiles (S + C + B) times L = `execution_lcycles`, the lcycles from time 0
+until the last operation finishes. Operation counts and volumes are charged when an operation
 starts (its duration is fixed then); cultivation outcomes are charged on completion.
 """
 
@@ -21,7 +22,7 @@ from model import (
     Tile,
 )
 
-METRICS_VERSION = "online-v4"
+METRICS_VERSION = "online-v6"
 
 
 @dataclass
@@ -33,8 +34,8 @@ class RunMetrics:
     direct_contacts: int = 0
     failed_attempts: int = 0
     retry_cycles: int = 0
-    swap_depth: int = 0
-    layers: dict[Tile, int] = field(default_factory=dict)  # SWAP/move layer per slot
+    exchange_depth: int = 0
+    layers: dict[Tile, int] = field(default_factory=dict)  # exchange layer per slot
     ready_at: dict[str, int] = field(default_factory=dict)
     output_at: dict[str, int] = field(default_factory=dict)
     consumed_at: dict[str, int] = field(default_factory=dict)
@@ -59,10 +60,16 @@ class RunMetrics:
             self.volume["cultivation"] += duration
         if action.kind == "consume":
             self.consumed_at[action.gate] = operation.start
-        if action.kind in {"swap", "move"}:
+        if action.kind == "exchange":
             layer = 1 + max(self.layers.get(t, 0) for t in action.tiles)
             self.layers.update({t: layer for t in action.tiles})
-            self.swap_depth = max(self.swap_depth, layer)
+            self.exchange_depth = max(self.exchange_depth, layer)
+
+    def retime_cultivation(self, realized: ActiveOperation, planned: ActiveOperation) -> None:
+        """Replace an active cultivation's sampled duration by the planning estimate."""
+        change = (planned.end - planned.start) - (realized.end - realized.start)
+        self.cycles["cultivate"] += change
+        self.volume["cultivation"] += change
 
     def cultivation_finished(self, request: str, time: int, success: bool, spent: int) -> None:
         if success:
@@ -81,7 +88,7 @@ class RunMetrics:
             + weights.operation_volume * (self.volume["gate"] + self.volume["ancilla"])
             + weights.cultivation_volume * self.volume["cultivation"]
             + weights.request_wait * self.request_wait(time)
-            + weights.makespan * time
+            + weights.execution_lcycles * time
         )
 
     def summary(self, problem: Problem, state: SystemState, complete: bool) -> dict[str, Any]:
@@ -99,19 +106,18 @@ class RunMetrics:
             "metrics_version": METRICS_VERSION,
             "circuit_completed": complete,
             "completed_gates": len(state.completed),
-            "makespan": horizon,
+            "execution_lcycles": horizon,
             "time_unit": "lcycle",
             "code_distance": problem.time_scale.code_distance,
             "lcycle_us": problem.time_scale.lcycle_us,
-            "makespan_us": horizon * problem.time_scale.lcycle_us,
+            "execution_us": horizon * problem.time_scale.lcycle_us,
             "objective": self.objective(problem.objective, horizon),
             "operation_counts": dict(sorted(self.counts.items())),
             "operation_cycles": dict(sorted(self.cycles.items())),
-            "swap_count": self.counts["swap"],
-            "move_count": self.counts["move"],
+            "exchange_count": self.counts["exchange"],
             "relocation_count": self.counts["relocate"],
-            "swap_depth": self.swap_depth,
-            "movement_cycles": self.cycles["swap"] + self.cycles["move"],
+            "exchange_depth": self.exchange_depth,
+            "movement_cycles": self.cycles["exchange"],
             "movement_volume": self.volume["movement"],
             "gate_volume": self.volume["gate"] + self.volume["ancilla"],
             "cultivation_volume": self.volume["cultivation"],

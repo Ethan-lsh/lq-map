@@ -1,7 +1,7 @@
 """Policy-neutral deterministic events; reservations occupy half-open intervals."""
 
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ir import Gate
@@ -39,8 +39,9 @@ class ExecutionTrace:
 class Simulator:
     """Executes actions on one state.
 
-    `realized=True` is the live run: cultivation outcomes are sampled from the supply
-    model. Snapshots are planning copies that only see the declared expectation.
+    `realized=True` is the live run: cultivation outcomes (and exponential cultivation
+    durations) are sampled from the supply model. Snapshots are planning copies that
+    only see the declared expectation.
     """
 
     def __init__(self, problem: Problem, *, realized: bool = True):
@@ -59,7 +60,19 @@ class Simulator:
         other.problem, other.realized, other.trace = self.problem, False, None
         other.state = self.state.snapshot()
         other.metrics = deepcopy(self.metrics)
+        if self.realized and self.problem.supply.exponential:
+            other.state.active = [self._planned(op, other.metrics) for op in other.state.active]
         return other
+
+    def _planned(self, operation: ActiveOperation, metrics: RunMetrics) -> ActiveOperation:
+        """Hide a sampled cultivation end: assume the planning estimate, or, once that
+        has passed, the next lcycle (an active operation ends after now)."""
+        if operation.action.kind != "cultivate":
+            return operation
+        estimate = operation.start + self.problem.supply.planning_cultivation
+        planned = replace(operation, end=max(estimate, self.state.time + 1))
+        metrics.retime_cultivation(operation, planned)
+        return planned
 
     def emit(self, event: str, **fields: Any) -> None:
         if self.trace is not None:
@@ -164,24 +177,16 @@ class Simulator:
     def _check_two(self, action: Action) -> None:
         self._check_single(action)
 
-    def _check_swap(self, action: Action) -> None:
-        self._require(action.msc is None and action.gate is None, "SWAP is data-only")
-        self._require(
-            len(action.tiles) == 2 and all(t in self.state.data_at for t in action.tiles),
-            "SWAP requires two data slots",
-        )
-
-    def _check_move(self, action: Action) -> None:
+    def _check_exchange(self, action: Action) -> None:
+        """SWAP with a data patch, or a move into an empty slot; MSC sites never take part."""
         state = self.state
-        self._require(action.msc is None and action.gate is None, "move is data-only")
-        self._require(len(action.tiles) == 2, "move needs source and destination")
+        self._require(action.msc is None and action.gate is None, "exchange is data-only")
+        self._require(len(action.tiles) == 2, "exchange needs source and destination")
         source, destination = action.tiles
-        self._require(source in state.data_at, "move source holds no data")
+        self._require(source in state.data_at, "exchange source holds no data")
         self._require(
-            destination in self.problem.geometry.slots
-            and destination not in state.data_at
-            and state.msc_at(destination) is None,
-            "move destination must be an empty slot",
+            destination in self.problem.geometry.slots and state.msc_at(destination) is None,
+            "exchange destination must be a data slot or an empty slot",
         )
 
     def _check_contact(self, action: Action) -> None:
@@ -206,7 +211,7 @@ class Simulator:
             return
         state = self.state
         gate = self.problem.gates.get(action.gate) if action.gate else None
-        duration = self.problem.costs.duration(action, gate)
+        duration = self._duration(action, gate)
         operation = ActiveOperation(state.next_operation, action, state.time, state.time + duration)
         state.next_operation += 1
         state.active.append(operation)
@@ -216,6 +221,17 @@ class Simulator:
             state.mscs[action.msc].phase = PHASE_ON_START[action.kind]
         self.metrics.start(operation)
         self.emit("start", operation=operation.id, end=operation.end, action=action.to_dict())
+
+    def _duration(self, action: Action, gate: Gate | None) -> int:
+        supply, costs = self.problem.supply, self.problem.costs
+        if action.kind == "initialize":
+            return supply.initialize_duration(costs)
+        if action.kind == "cultivate":
+            owner = self.state.mscs[action.msc]
+            return supply.cultivate_duration(
+                costs, action.msc, owner.generation, owner.attempt, self.realized
+            )
+        return costs.duration(action, gate)
 
     def _assign(self, action: Action) -> None:
         """Zero-duration ownership of a request; reserves no tiles."""
@@ -251,7 +267,7 @@ class Simulator:
             state.mscs[action.msc].phase = Phase.INITIALIZED
         elif action.kind == "cultivate":
             details["success"] = self._finish_cultivation(action.msc, operation)
-        elif action.kind in {"swap", "move"}:
+        elif action.kind == "exchange":
             details["moved"] = self._exchange(*action.tiles)
         elif action.kind == "relocate":
             state.mscs[action.msc].site = action.tiles[1]
@@ -272,7 +288,8 @@ class Simulator:
         success = self.problem.supply.succeeds(
             msc_id, owner.generation, owner.attempt, self.realized
         )
-        spent = self.problem.costs.initialize + operation.end - operation.start
+        initialize = self.problem.supply.initialize_duration(self.problem.costs)
+        spent = initialize + operation.end - operation.start
         self.metrics.cultivation_finished(owner.request, self.state.time, success, spent)
         if success:
             owner.phase, owner.output = Phase.OUTPUT, f"{msc_id}:state:{owner.generation}"

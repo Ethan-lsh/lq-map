@@ -16,7 +16,7 @@ from tempfile import TemporaryDirectory
 from typing import Any, Self
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from ir import CircuitDAG
+from ir import DEPENDENCY_MODES, CircuitDAG, pauli_frame
 from mapping import initial_placement
 from metrics import METRICS_VERSION
 from model import (
@@ -37,8 +37,8 @@ from policies import PolicySettings, drive, make_policy
 from qiskit_io import load_qasm, qiskit_version
 from sim import Simulator
 
-RAW_SCHEMA_VERSION = 4
-EVALUATION_VERSION = "performance-v5"
+RAW_SCHEMA_VERSION = 7
+EVALUATION_VERSION = "performance-v8"
 
 ASSUMPTIONS = {
     "model": MODEL_VERSION,
@@ -49,29 +49,48 @@ ASSUMPTIONS = {
     },
     "execution": "no routing paths or remote operations: two-patch operations need a local "
     "contact (direct or one shared ancilla tile); distant operands are brought into contact "
-    "by SWAP/move sequences",
-    "swap": "abstract exchange of in-line cardinal neighbors across one junction bus tile, "
-    "occupying both slots and the junction; the physical SWAP protocol is not specified",
+    "by exchange (SWAP) sequences",
+    "exchange": "one abstract operation for SWAP and for a move into an empty slot: in-line "
+    "cardinal neighbors with one auxiliary bus tile, one duration (costs.exchange); the "
+    "physical SWAP protocol is not specified",
     "msc_operation": "an MSC operates at any C slot; M limits concurrent resources; "
     "relocation needs an empty C slot and transfers no state",
-    "supply": "Bernoulli attempts; failure repeats initialize+cultivate; planning uses "
-    "ceil(1/p) attempts and never reads realized outcomes",
+    "supply": "supply.distribution=bernoulli (default): attempts succeed with p; failure "
+    "repeats initialize+cultivate; planning uses ceil(1/p) attempts. exponential "
+    "(PureMagic, arXiv:2512.06484 Sec. III-C): each state's production time is an "
+    "exponential sample with rate lambda per lcycle rounded to the nearest integer (0: "
+    "ready at once), initialize takes 0 lcycles and costs.initialize/cultivate are unused; "
+    "planning assumes round(1/lambda) lcycles (heuristic). Unlike PureMagic, cultivation is "
+    "owned by one request and is never interrupted. Planning never reads realized outcomes",
     "timing": "integer logical cycles (lcycles); gate defaults follow PureMagic's lcycle "
-    "accounting (CX 2, S/SDG 3, T consume 1); H/X/Z/CZ, cultivation, SWAP, move, and "
+    "accounting (CX 2, S/SDG 3, T consume 1); H/X/Z/CZ, cultivation, exchange, and "
     "relocation durations are modeling assumptions; half-open reservations; finishes by "
     "operation ID before starts",
     "time_scale": "physical cycle 1 us by default; a logical cycle takes at least "
     "code_distance physical cycles and the model uses that minimum (modeling choice), so "
     "code_distance 17 gives 17 us per lcycle; durations are not rescaled by code_distance",
     "objective": "weighted movement_volume + operation_volume + cultivation_volume "
-    "+ request_wait + makespan",
+    "+ request_wait + execution_lcycles (lcycles from time 0 until the last operation "
+    "finishes)",
+    "dependencies": "circuit_model.dependencies=commutation (default): on a shared qubit, "
+    "gates commute when both act as functions of Z (T, TDG, S, SDG, Z, CZ, CX control) or "
+    "of X (X, CX target); H commutes with neither; program_order keeps input order per "
+    "qubit",
+    "pauli_frame": "circuit_model.pauli_frame=true (default, modeling choice): X and Z are "
+    "tracked classically, not executed; the frame is conjugated through Cliffords, an X "
+    "component at T/TDG swaps it for its inverse, and the residual frame corrects final "
+    "measurement outcomes",
+    "base_rule": "each ready gate (input order) executes in contact or starts the next "
+    "exchange of its fewest-exchange plan whose two operand paths are slot-disjoint; both "
+    "operands advance together; operands of earlier ready gates are protected and never "
+    "move for later gates",
     "magic_gates": "T and T-dagger each consume one magic state; the Clifford difference "
     "is folded into consumption",
     "circuit_import": "OpenQASM files are parsed and decomposed into Clifford+T by Qiskit "
     "(optimization level 1, final measurements removed, barriers ignored); rotation "
     "synthesis precision sets the T count; the resolved config stores the converted gates",
     "spacetime_volume": "N x L: provisioned tiles (S + C + B, blocked excluded) times the "
-    "realized makespan in lcycles, including SWAP, supply, and resource waits; "
+    "realized execution_lcycles, including SWAP, supply, and resource waits; "
     "spacetime_volume_us multiplies by lcycle_us",
     "waits": "T dependency readiness to consumption start; supply then access",
     "claim": "abstract scheduling model, not a physically verified protocol",
@@ -81,14 +100,25 @@ REMOVED_KEYS = {
     "layout": "replace layout with geometry.tiles (rows of S/C/B/. characters)",
     "mode": "remove mode; interval reservations are the only execution model",
     "budget": "remove budget; experiments have no completion deadline",
-    "long_route_threshold": "remove it; tile-swap-v1 has no routing paths",
+    "long_route_threshold": "remove it; the model has no routing paths",
 }
 REMOVED_FIELDS = {
     "costs": {
         "route_tile": "remove it; operations use local contacts, not routes",
-        "movement_reach": "remove it; a SWAP/move spans one junction tile",
+        "movement_reach": "remove it; an exchange spans one junction tile",
+        "swap": "rename it to exchange (one duration for SWAP and move)",
+        "move": "remove it; costs.exchange covers moves into empty slots",
     },
-    "objective": {"routing_volume": "remove it; use movement_volume and operation_volume"},
+    "settings": {
+        "site_limit": "remove it; search_limit bounds all JointScheduler candidates",
+        "remap_limit": "remove it; search_limit bounds all JointScheduler candidates",
+        "parallel_exchange": "remove it; both operands always advance together",
+    },
+    "objective": {
+        "routing_volume": "remove it; use movement_volume and operation_volume",
+        "makespan": "rename it to execution_lcycles (lcycles from time 0 until the last "
+        "operation finishes)",
+    },
 }
 TOP_LEVEL_KEYS = {
     "schema_version",
@@ -100,6 +130,7 @@ TOP_LEVEL_KEYS = {
     "mscs",
     "costs",
     "timing",
+    "circuit_model",
     "supply",
     "objective",
     "mapping",
@@ -233,7 +264,8 @@ def resolve(raw: dict, base: Path = Path("."), sample: int = 0) -> tuple[Problem
     seed = raw.get("seed", 0)
     if type(seed) is not int:
         raise ValueError("seed must be an integer")
-    circuit = _circuit(raw, base, supplied, seed)
+    circuit_model = _circuit_model(raw.get("circuit_model", {}))
+    circuit, frame = _circuit(raw, base, supplied, seed, circuit_model)
     costs = OperationCosts(**raw.get("costs", {}))
     time_scale = _time_scale(raw.get("timing", {}))
     supply = _supply(raw.get("supply", {}), seed, sample)
@@ -266,12 +298,10 @@ def resolve(raw: dict, base: Path = Path("."), sample: int = 0) -> tuple[Problem
         "placement": _tiles_dict(placement),
         "mscs": _tiles_dict(sites),
         "circuit": circuit.to_dict(),
+        "circuit_model": {**{k: circuit_model[k] for k in CIRCUIT_MODEL_DEFAULTS}, "frame": frame},
         "costs": asdict(costs),
         "timing": {**asdict(time_scale), "unit": "lcycle", "lcycle_us": time_scale.lcycle_us},
-        "supply": {
-            "success_probability": supply.success_probability,
-            "planning_attempts": supply.planning_attempts,
-        },
+        "supply": _resolved_supply(supply),
         "objective": asdict(problem.objective),
         "policy": policy,
         "settings": asdict(settings),
@@ -320,9 +350,28 @@ def _geometry(raw: dict) -> Geometry:
     return Geometry(tuple(raw["geometry"]["tiles"]))
 
 
-def _circuit(raw: dict, base: Path, supplied: dict[str, Tile], seed: int) -> CircuitDAG:
+CIRCUIT_MODEL_DEFAULTS = {"dependencies": "commutation", "pauli_frame": True}
+
+
+def _circuit_model(raw: dict) -> dict:
+    """Dependency rule and Pauli-frame tracking; `frame` is derived and accepted only
+    when rerunning a resolved config."""
+    if not isinstance(raw, dict) or set(raw) - {*CIRCUIT_MODEL_DEFAULTS, "frame"}:
+        raise ValueError("circuit_model accepts dependencies and pauli_frame")
+    model = {**CIRCUIT_MODEL_DEFAULTS, **{k: v for k, v in raw.items() if k != "frame"}}
+    if model["dependencies"] not in DEPENDENCY_MODES:
+        raise ValueError(f"circuit_model.dependencies must be one of {DEPENDENCY_MODES}")
+    if type(model["pauli_frame"]) is not bool:
+        raise ValueError("circuit_model.pauli_frame must be boolean")
+    return {**model, "previous_frame": raw.get("frame")}
+
+
+def _circuit(
+    raw: dict, base: Path, supplied: dict[str, Tile], seed: int, model: dict
+) -> tuple[CircuitDAG, dict | None]:
     """An inline circuit, a JSON or OpenQASM (via Qiskit) file, or a workload generated
-    against the supplied placement. The resolved config stores the converted circuit."""
+    against the supplied placement. The resolved config stores the converted circuit,
+    after Pauli-frame tracking, and the frame record."""
     if ("circuit" in raw) == ("workload" in raw):
         raise ValueError("provide exactly one of circuit or workload")
     circuit_raw = raw.get("circuit")
@@ -331,17 +380,50 @@ def _circuit(raw: dict, base: Path, supplied: dict[str, Tile], seed: int) -> Cir
         circuit_raw = load_qasm(path) if path.suffix == ".qasm" else load_document(path)
     if circuit_raw is None:
         circuit_raw = workload(raw["workload"], supplied, seed)
-    return CircuitDAG.from_dict(circuit_raw)
+    frame = None
+    if model["pauli_frame"]:
+        circuit_raw, record = pauli_frame(circuit_raw)
+        # A resolved circuit is already reduced; keep the record of the original import.
+        frame = (
+            record.to_dict()
+            if record.removed or not model["previous_frame"]
+            else (model["previous_frame"])
+        )
+    return CircuitDAG.from_dict(circuit_raw, model["dependencies"]), frame
+
+
+SUPPLY_KEYS = {
+    "bernoulli": ("success_probability", "planning_attempts"),
+    "exponential": ("rate", "planning_cultivation"),
+}
 
 
 def _supply(raw: dict, seed: int, sample: int) -> SupplyModel:
-    """`planning_attempts` is derived; it is accepted only when rerunning a resolved config."""
-    if set(raw) - {"success_probability", "planning_attempts"}:
-        raise ValueError("supply accepts success_probability; seeds come from seed and sample")
-    supply = SupplyModel(raw.get("success_probability", 1.0), seed, sample)
-    if raw.get("planning_attempts", supply.planning_attempts) != supply.planning_attempts:
-        raise ValueError("supply.planning_attempts is derived from success_probability")
+    """Planning estimates are derived; they are accepted only when rerunning a resolved
+    config."""
+    distribution = raw.get("distribution", "bernoulli")
+    if distribution not in SUPPLY_KEYS:
+        raise ValueError(f"supply.distribution must be one of {sorted(SUPPLY_KEYS)}")
+    given, derived = SUPPLY_KEYS[distribution]
+    if set(raw) - {"distribution", given, derived}:
+        raise ValueError(
+            f"{distribution} supply accepts distribution and {given}; "
+            "seeds come from seed and sample"
+        )
+    params = {given: raw[given]} if given in raw else {}
+    supply = SupplyModel(distribution, **params, seed=seed, sample=sample)
+    if raw.get(derived, getattr(supply, derived)) != getattr(supply, derived):
+        raise ValueError(f"supply.{derived} is derived from {given}")
     return supply
+
+
+def _resolved_supply(supply: SupplyModel) -> dict:
+    given, derived = SUPPLY_KEYS[supply.distribution]
+    return {
+        "distribution": supply.distribution,
+        given: getattr(supply, given),
+        derived: getattr(supply, derived),
+    }
 
 
 def _tiles_dict(items: dict) -> dict[str, list[int]]:
@@ -410,11 +492,10 @@ SUMMARY_COLUMNS = (
     "name",
     "status",
     "objective",
-    "makespan",
-    "makespan_us",
-    "swap_count",
-    "move_count",
-    "swap_depth",
+    "execution_lcycles",
+    "execution_us",
+    "exchange_count",
+    "exchange_depth",
     "movement_volume",
     "relocation_count",
     "total_request_wait",
@@ -463,15 +544,29 @@ class RawDataWriter:
         return self
 
     def _copy_previous(self) -> None:
-        """Re-validate and carry over records from an existing archive."""
+        """Re-validate and carry over records from an existing archive.
+
+        An archive from an older raw schema is not merged: it is replaced by this batch,
+        and only when the batch completes (the pending files replace it on exit).
+        """
         if not self.path.exists():
             return
         with ZipFile(self.path) as previous:
             if previous.namelist() != ["raw_data.jsonl"]:
                 raise ValueError("unsupported raw archive layout")
             with previous.open("raw_data.jsonl") as records:
-                for line in records:
-                    self.write(json.loads(line))
+                for position, line in enumerate(records):
+                    record = json.loads(line)
+                    schema = record.get("raw_schema_version", RAW_SCHEMA_VERSION)
+                    if position == 0 and isinstance(schema, int) and schema < RAW_SCHEMA_VERSION:
+                        print(
+                            f"mscmap: {self.path} uses raw schema {schema}; it is replaced "
+                            f"by raw schema {RAW_SCHEMA_VERSION} results if this batch "
+                            "completes (never merged)",
+                            file=sys.stderr,
+                        )
+                        return
+                    self.write(record)
 
     def check_new(self, case_id: str | None, sample: int, repeat: int, names: list[str]) -> None:
         case_id = _case_label(case_id)
@@ -486,8 +581,9 @@ class RawDataWriter:
         data = {"raw_schema_version": RAW_SCHEMA_VERSION, **record}
         if data["raw_schema_version"] != RAW_SCHEMA_VERSION:
             raise ValueError(
-                f"existing archive uses raw schema {data['raw_schema_version']}; "
-                f"write {MODEL_VERSION} results to a new output directory"
+                f"{self.path} has raw schema {data['raw_schema_version']} records; this "
+                f"version writes only raw schema {RAW_SCHEMA_VERSION}; choose a new --output "
+                "directory"
             )
         if data["type"] == "run":
             self._add_run(data)

@@ -2,14 +2,14 @@
 
 There are no routing paths: every two-patch operation acts through a local contact
 (direct contact or one shared ancilla tile). Distant operands are first brought into
-contact by SWAP/move sequences.
+contact by sequences of exchanges (SWAPs).
 """
 
 from copy import deepcopy
 from dataclasses import dataclass, field, fields
 from enum import Enum
 from functools import cache, cached_property
-from math import ceil
+from math import ceil, floor
 from random import Random
 from typing import Any
 
@@ -32,7 +32,7 @@ TILE_KINDS = {
 }
 
 GATE_KINDS = frozenset({"single", "two", "consume"})
-MOVEMENT_KINDS = frozenset({"swap", "move", "relocate"})
+MOVEMENT_KINDS = frozenset({"exchange", "relocate"})
 CULTIVATION_KINDS = frozenset({"initialize", "cultivate"})
 
 OPERATION_CONTRACTS = {
@@ -47,11 +47,16 @@ OPERATION_CONTRACTS = {
         "source and destination slots",
         "MSC site moves; no quantum state is transferred",
     ),
-    "initialize": ("assigned MSC", "site slot", "MSC initialized"),
+    "initialize": (
+        "assigned MSC",
+        "site slot (0 lcycles under exponential supply)",
+        "MSC initialized",
+    ),
     "cultivate": (
         "initialized MSC",
         "site slot",
-        "success: one owned output; failure: back to assigned (retry)",
+        "success: one owned output; failure: back to assigned (retry); duration is "
+        "costs.cultivate, or an exponential sample under supply.distribution=exponential",
     ),
     "consume": (
         "dependency-ready T; owned output; data and output Z sides in local contact",
@@ -64,15 +69,10 @@ OPERATION_CONTRACTS = {
         "both operand slots and the ancilla tile",
         "gate completed",
     ),
-    "swap": (
-        "two data patches that are in-line cardinal neighbors (adjacent or one tile apart)",
+    "exchange": (
+        "data patch and an in-line cardinal neighbor slot (data or empty, not an MSC site)",
         "both slots and one auxiliary bus tile (the junction, else a tile beside either)",
-        "data exchanged; logical mapping updated",
-    ),
-    "move": (
-        "data patch and an empty in-line cardinal neighbor slot, as for SWAP",
-        "both slots and one auxiliary bus tile",
-        "data moved; logical mapping updated",
+        "slot contents exchanged (into an empty slot: a move); logical mapping updated",
     ),
 }
 
@@ -160,7 +160,7 @@ class Contact:
 class ContactRule:
     """Boundary types (first, second) and whether an ancilla tile is mandatory.
 
-    An `exchange` rule (SWAP/move) instead requires in-line cardinal neighbors plus one
+    An `exchange` rule (SWAP) instead requires in-line cardinal neighbors plus one
     auxiliary bus tile; boundary types do not matter for an exchange.
     """
 
@@ -178,7 +178,7 @@ class OperationCosts:
     """Integer durations in logical cycles (lcycles); not calibrated values.
 
     Gate defaults follow PureMagic's lcycle accounting (CX 2, S/SX 3, T 1). H, X, Z,
-    CZ, cultivation, SWAP, move, and relocation have no PureMagic counterpart there
+    CZ, cultivation, exchange (SWAP), and relocation have no PureMagic counterpart there
     (its tableau absorbs H/CZ/Paulis and it routes instead of swapping); their
     defaults are modeling assumptions.
     """
@@ -189,8 +189,7 @@ class OperationCosts:
     consume: int = 1
     initialize: int = 1
     cultivate: int = 3
-    swap: int = 3
-    move: int = 1
+    exchange: int = 3
     relocate: int = 1
 
     def __post_init__(self) -> None:
@@ -249,7 +248,7 @@ def contact_rule(kind: str, gate_kind: str | None = None) -> ContactRule | None:
         return ContactRule(("Z", "X") if gate_kind == "CX" else ("Z", "Z"), True)
     if kind == "consume":
         return ContactRule(("Z", "Z"), False)
-    if kind in {"swap", "move"}:
+    if kind == "exchange":
         return ContactRule(("any", "any"), True, exchange=True)
     return None
 
@@ -295,56 +294,106 @@ def _exchange_contacts(geometry: Geometry, first: Tile, second: Tile) -> tuple[C
     return ()
 
 
+SUPPLY_DISTRIBUTIONS = ("bernoulli", "exponential")
+# PureMagic's default cultivation rate (states per MSC per lcycle): its paper fits
+# lambda = 0.00227 per physical cycle and divides cultivation samples by d = 17
+# (arXiv:2512.06484, Sec. V-B); the code default `--magic-state-lambda` is 0.0387396.
+PUREMAGIC_RATE = 0.0387396
+
+
 @dataclass(frozen=True)
 class SupplyModel:
-    """Independent Bernoulli cultivation attempts; a failure repeats initialize+cultivate.
+    """Stochastic cultivation supply; realized outcomes derive from (seed, sample, MSC,
+    generation, attempt), so they do not depend on event order.
 
-    Realized outcomes derive from (seed, sample, MSC, generation, attempt), so they do
-    not depend on event order. Planning copies never read them; they assume success
-    on attempt `planning_attempts`, the ceiling of the expected attempt count.
+    `bernoulli`: each initialize + cultivate attempt succeeds with `success_probability`;
+    a failure repeats both. Planning assumes success on attempt `planning_attempts`.
+
+    `exponential` (PureMagic, arXiv:2512.06484 Sec. III-C; `src/cultivation.rs`): the
+    production time of each state is an exponential sample with `rate` lambda per lcycle,
+    rounded to the nearest integer (0 means ready at once). Injection, cultivation, and
+    escape collapse into this one sample, so `initialize` takes 0 lcycles, every attempt
+    succeeds, and `costs.initialize`/`costs.cultivate` are unused. Planning copies assume
+    `planning_cultivation` lcycles and never see the realized sample.
     """
 
+    distribution: str = "bernoulli"
     success_probability: float = 1.0
+    rate: float = PUREMAGIC_RATE
     seed: int = 0
     sample: int = 0
 
     def __post_init__(self) -> None:
-        p = self.success_probability
-        if isinstance(p, bool) or not isinstance(p, (int, float)) or not 0 < p <= 1:
-            raise ValueError("supply.success_probability must be in (0, 1]")
+        if self.distribution not in SUPPLY_DISTRIBUTIONS:
+            raise ValueError(f"supply.distribution must be one of {list(SUPPLY_DISTRIBUTIONS)}")
+        for name, upper in (("success_probability", 1), ("rate", None)):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+                raise ValueError(f"supply.{name} must be a positive number")
+            if upper is not None and value > upper:
+                raise ValueError(f"supply.{name} must be in (0, {upper}]")
+        if self.exponential and self.success_probability != 1:
+            raise ValueError("exponential supply always succeeds; omit success_probability")
         if type(self.seed) is not int or type(self.sample) is not int or self.sample < 0:
             raise ValueError("supply seed and sample must be integers (sample >= 0)")
 
     @property
+    def exponential(self) -> bool:
+        return self.distribution == "exponential"
+
+    @property
     def deterministic(self) -> bool:
-        return self.success_probability == 1
+        return not self.exponential and self.success_probability == 1
 
     @property
     def planning_attempts(self) -> int:
         return ceil(1 / self.success_probability - 1e-12)
 
+    @property
+    def planning_cultivation(self) -> int:
+        """Exponential planning estimate: the mean 1/rate, rounded, at least 1 lcycle."""
+        return max(1, floor(1 / self.rate + 0.5))
+
+    def _draw(self, msc: str, generation: int, attempt: int) -> Random:
+        return Random(f"{self.seed}:{self.sample}:{msc}:{generation}:{attempt}")
+
+    def initialize_duration(self, costs: "OperationCosts") -> int:
+        return 0 if self.exponential else costs.initialize
+
+    def cultivate_duration(
+        self, costs: "OperationCosts", msc: str, generation: int, attempt: int, realized: bool
+    ) -> int:
+        if not self.exponential:
+            return costs.cultivate
+        if not realized:
+            return self.planning_cultivation
+        # Round half away from zero, as Rust's f64::round in PureMagic.
+        return floor(self._draw(msc, generation, attempt).expovariate(self.rate) + 0.5)
+
     def succeeds(self, msc: str, generation: int, attempt: int, realized: bool) -> bool:
+        if self.exponential:
+            return True
         if not realized:
             return attempt + 1 >= self.planning_attempts
-        draw = Random(f"{self.seed}:{self.sample}:{msc}:{generation}:{attempt}").random()
-        return draw < self.success_probability
+        return self._draw(msc, generation, attempt).random() < self.success_probability
 
 
 @dataclass(frozen=True)
 class Objective:
     """Weighted execution cost shared by planning and evaluation.
 
-    Volumes are tile-lcycles: `movement_volume` (SWAP/move/relocation footprints),
+    Volumes are tile-lcycles: `movement_volume` (exchange and relocation footprints),
     `operation_volume` (local gates and T consumption, including ancilla tiles), and
     `cultivation_volume` (initialize + cultivate, retries included). `request_wait` is
-    the summed T wait from readiness to consumption start; `makespan` is final time.
+    the summed T wait from readiness to consumption start; `execution_lcycles` is the
+    number of lcycles from time 0 until the last operation finishes.
     """
 
     movement_volume: float = 1.0
     operation_volume: float = 1.0
     cultivation_volume: float = 1.0
     request_wait: float = 1.0
-    makespan: float = 1.0
+    execution_lcycles: float = 1.0
 
     def __post_init__(self) -> None:
         values = [getattr(self, f.name) for f in fields(self)]
