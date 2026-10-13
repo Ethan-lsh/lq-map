@@ -43,24 +43,42 @@ charges H `costs.single`.
 Volume is N x L in both models. N: mscmap S + C + B tiles; PureMagic data qubits + bus
 + magic nodes; both equal the grid size here. L = execution_lcycles: lcycles from time
 0 until the last operation finishes (PureMagic: scheduled logical cycles).
+
+Active cells per lcycle (`active_series.csv`, one row per model, sample, and lcycle) use
+the same layers in both models: data (patches engaged by an operation; PureMagic: the
+qubits of every product in progress, counted from `circuit.schedule`, which repeats
+multi-lcycle products), aux (mscmap ancilla/junction tiles; PureMagic routed bus nodes,
+plus magic nodes when routing through them), cultivating (magic resources not ready),
+holding (ready and unconsumed) and consume (consumed this lcycle). Idle data patches are
+not active in either model. The PureMagic bus and magic layers need its per-lcycle
+counters, which the binary only prints as averages: apply
+`examples/puremagic_stats_csv.patch` (an output hook on `ScheduleStats::update`, no
+scheduling change) and rebuild; the hook writes a CSV when `PUREMAGIC_STATS_CSV` is set.
+Without the hook, PureMagic rows carry the data layer only and the manifest says so.
+PureMagic's own counters skip the data node of a single-qubit Clifford after its first
+lcycle, so they are not used for the data layer.
 """
 
 import argparse
 import copy
 import csv
 import json
+import os
 import re
 import statistics
 import subprocess
 from pathlib import Path
+from zipfile import ZipFile
 
 from qasm_benchmark import EVENTS_PER_GATE, ROOT, SIZE_CLASSES, VARIANTS, circuit_stats, discover
 
 from experiments import RawDataWriter, load_document, resolve, run
+from metrics import ACTIVE_LAYERS, decode_series
 from model import PUREMAGIC_RATE
 from qiskit_io import load_qasm, qiskit_version
 
-GENERATOR_VERSION = "puremagic-compare-v2"
+GENERATOR_VERSION = "puremagic-compare-v3"
+STATS_HOOK = "PUREMAGIC_STATS_CSV"  # see examples/puremagic_stats_csv.patch
 QASM_NAMES = {k: k.lower() for k in ("H", "S", "SDG", "X", "Z", "T", "TDG", "CX", "CZ")}
 COLUMNS = (
     "case_id",
@@ -76,7 +94,12 @@ COLUMNS = (
     "spacetime_volume",
     "spacetime_volume_us",
     "volume_lower_bound",
+    "active_volume",
+    "mean_active_cells",
+    "peak_active_cells",
+    "active_utilization",
 )
+SERIES_COLUMNS = ("case_id", "model", "sample", "lcycle", *ACTIVE_LAYERS, "total", "fraction_of_n")
 MEDIAN_COLUMNS = (
     "case_id",
     "model",
@@ -89,7 +112,10 @@ MEDIAN_COLUMNS = (
     "execution_lcycles_min",
     "execution_lcycles_max",
     "spacetime_volume_median",
+    "active_volume_median",
+    "active_utilization_median",
 )
+SCHEDULE_LINE = re.compile(r"^\s*(\d+): (\S+) ")
 SCHEDULED = re.compile(r"Scheduled (\d+) in (\d+) logical cycles, volume (\d+)")
 ESTIMATE = re.compile(r"^Volume estimate: (\d+)", re.MULTILINE)
 # Node counts ("  data:  8 (0.121)"); utilization lines ("  data:  0.220") do not match.
@@ -106,9 +132,11 @@ def to_qasm(circuit: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def execute(command: list[str], cwd: Path, log: Path) -> str:
+def execute(command: list[str], cwd: Path, log: Path, env: dict[str, str] | None = None) -> str:
     """Run an external binary; keep its combined output and fail with that log."""
-    done = subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False)
+    done = subprocess.run(
+        command, cwd=cwd, capture_output=True, text=True, check=False, env=env
+    )
     log.write_text(f"$ {' '.join(command)}\n{done.stdout}{done.stderr}")
     if done.returncode != 0:
         raise RuntimeError(f"{command[0]} failed ({done.returncode}); see {log}")
@@ -211,6 +239,7 @@ def run_puremagic(
     (work / "topology.txt").write_text("\n".join("  ".join(row) for row in grid) + "\n")
     results = []
     for seed in range(1, args.samples + 1):
+        stats = work / f"puremagic.r{seed}.stats.csv"
         out = execute(
             [
                 str(binaries / "puremagic"),
@@ -219,6 +248,7 @@ def run_puremagic(
             ],
             work,
             work / f"puremagic.r{seed}.log",
+            {**os.environ, STATS_HOOK: stats.name},
         )
         scheduled = SCHEDULED.search(out)
         if scheduled is None:
@@ -233,9 +263,95 @@ def run_puremagic(
                 "volume": int(scheduled[3]),
                 "counts": counts,
                 "volume_lower_bound": int(estimate[1]) if estimate else None,
+                # circuit.schedule is rewritten per seed: read it now.
+                "series": puremagic_series(
+                    work / "circuit.schedule", stats, int(scheduled[2]), args.msc_count
+                ),
             }
         )
     return results
+
+
+def puremagic_series(
+    schedule: Path, stats: Path, lcycles: int, magic: int
+) -> dict[str, list[int]]:
+    """Active cells per lcycle 1..lcycles by layer (see module docstring); bus and magic
+    layers are empty lists when the stats hook did not write `stats`."""
+    data = [0] * lcycles
+    for line in schedule.read_text().splitlines():
+        found = SCHEDULE_LINE.match(line)
+        if found and int(found[1]) <= lcycles:
+            data[int(found[1]) - 1] = sum(c != "_" for c in found[2])
+    series = {"data": data, **{layer: [] for layer in ACTIVE_LAYERS if layer != "data"}}
+    if not stats.is_file():
+        return series
+    for layer in series:
+        if layer != "data":
+            series[layer] = [0] * lcycles
+    with stats.open(newline="") as stream:
+        for row in csv.DictReader(stream):
+            t = int(row["lcycle"]) - 1
+            if not 0 <= t < lcycles:
+                continue
+            ready, consumed = int(row["magic_ready"]), int(row["t_scheduled"])
+            series["aux"][t] = int(row["bus_used"]) + int(row["magic_used"])
+            series["cultivating"][t] = magic - ready
+            series["holding"][t] = ready - consumed
+            series["consume"][t] = consumed
+    return series
+
+
+def series_rows(case_id: str, model: str, sample: int, series: dict, n_total: int) -> list[dict]:
+    """One `active_series.csv` row per lcycle; missing layers are blank."""
+    rows = []
+    for t in range(len(series["data"])):
+        values = {layer: series[layer][t] if series[layer] else "" for layer in ACTIVE_LAYERS}
+        total = sum(v for v in values.values() if v != "")
+        rows.append(
+            {
+                "case_id": case_id,
+                "model": model,
+                "sample": sample,
+                "lcycle": t,
+                **values,
+                "total": total,
+                "fraction_of_n": round(total / n_total, 6),
+            }
+        )
+    return rows
+
+
+def active_totals(series: dict, lcycles: int, n_total: int) -> dict:
+    """Totals of the layers present: cell-lcycles, mean and peak cells, utilization."""
+    present = [series[layer] for layer in ACTIVE_LAYERS if series[layer]]
+    total = [sum(layer[t] for layer in present) for t in range(lcycles)]
+    volume = sum(total)
+    return {
+        "active_volume": volume,
+        "mean_active_cells": round(volume / lcycles, 4) if lcycles else 0,
+        "peak_active_cells": max(total, default=0),
+        "active_utilization": round(volume / (n_total * lcycles), 6) if lcycles else 0,
+    }
+
+
+def mscmap_series_rows(archive: Path) -> list[dict]:
+    """Rows for every mscmap run in the archive, decoded from `active_series`."""
+    rows = []
+    with ZipFile(archive) as data, data.open("raw_data.jsonl") as records:
+        for line in records:
+            record = json.loads(line)
+            if record["type"] != "run":
+                continue
+            metrics = record["metrics"]
+            series = {k: decode_series(v) for k, v in metrics["active_series"].items()}
+            rows += series_rows(
+                record["case_id"],
+                f"mscmap/{record['name']}",
+                record["sample"],
+                series,
+                metrics["provisioned_area"],
+            )
+    return rows
 
 
 def medians(rows: list[dict]) -> list[dict]:
@@ -260,6 +376,14 @@ def medians(rows: list[dict]) -> list[dict]:
                 "execution_lcycles_max": max(lcycles, default=""),
                 "spacetime_volume_median": (
                     statistics.median(r["spacetime_volume"] for r in done) if done else ""
+                ),
+                "active_volume_median": (
+                    statistics.median(r["active_volume"] for r in done) if done else ""
+                ),
+                "active_utilization_median": (
+                    round(statistics.median(r["active_utilization"] for r in done), 6)
+                    if done
+                    else ""
                 ),
             }
         )
@@ -311,7 +435,9 @@ def main() -> None:
 
     config_path = ROOT / "configs/experiment.yaml"
     common = load_document(config_path)
-    rows = []
+    rows: list[dict] = []
+    series: list[dict] = []
+    hooked = True
     with RawDataWriter(args.output / "mscmap") as archive:
         for size, path in found:
             case_id = f"{size}/{path.stem}"
@@ -348,6 +474,12 @@ def main() -> None:
                         "spacetime_volume": row["spacetime_volume"],
                         "spacetime_volume_us": row["spacetime_volume_us"],
                         "volume_lower_bound": "",
+                        "active_volume": row["active_volume"],
+                        "mean_active_cells": round(
+                            row["active_volume"] / row["execution_lcycles"], 4
+                        ),
+                        "peak_active_cells": row["peak_active_tiles"],
+                        "active_utilization": round(row["active_utilization"], 6),
                     }
                 )
             lcycle_us = resolved["timing"]["lcycle_us"]
@@ -359,6 +491,10 @@ def main() -> None:
                 continue
             for seed, result in enumerate(results, start=1):
                 counts = result["counts"]
+                hooked &= bool(result["series"]["aux"])
+                series.extend(
+                    series_rows(case_id, "PureMagic", seed, result["series"], counts["total"])
+                )
                 rows.append(
                     {
                         "case_id": case_id,
@@ -375,12 +511,15 @@ def main() -> None:
                         "spacetime_volume": result["volume"],
                         "spacetime_volume_us": result["volume"] * lcycle_us,
                         "volume_lower_bound": result["volume_lower_bound"],
+                        **active_totals(result["series"], result["lcycles"], counts["total"]),
                     }
                 )
             print(f"{case_id}: done", flush=True)
 
     write_csv(args.output / "comparison.csv", COLUMNS, rows)
     write_csv(args.output / "comparison_median.csv", MEDIAN_COLUMNS, medians(rows))
+    series = mscmap_series_rows(args.output / "mscmap" / "raw_data.zip") + series
+    write_csv(args.output / "active_series.csv", SERIES_COLUMNS, series)
     manifest = {
         "generator_version": GENERATOR_VERSION,
         "puremagic_commit": git_revision(args.puremagic),
@@ -398,6 +537,14 @@ def main() -> None:
             "mscmap": "(S + C + B tiles) x execution_lcycles",
             "PureMagic": "(data qubits + bus + magic nodes) x scheduled lcycles; "
             "volume_lower_bound is its pre-scheduling estimate",
+        },
+        "active_series": {
+            "layers": list(ACTIVE_LAYERS),
+            "mscmap": "cells of active operations per lcycle from the realized trace",
+            "PureMagic": "data from circuit.schedule; aux/cultivating/holding/consume from "
+            f"the {STATS_HOOK} hook (examples/puremagic_stats_csv.patch)",
+            "puremagic_stats_hook": hooked,
+            "fraction_of_n": "total active cells / N of that model",
         },
     }
     (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

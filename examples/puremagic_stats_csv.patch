@@ -1,0 +1,42 @@
+diff --git a/src/scheduler.rs b/src/scheduler.rs
+index 1e2c935..119c801 100644
+--- a/src/scheduler.rs
++++ b/src/scheduler.rs
+@@ -38,6 +38,8 @@ pub(crate) struct ScheduleStats {
+     magic_used: usize,
+     /// T products that consumed a magic node this lcycle (first attempt only).
+     t_scheduled: usize,
++    /// Measurement hook: per-lcycle usage rows written to $PUREMAGIC_STATS_CSV (if set).
++    stats_csv: Option<BufWriter<File>>,
+     /// Ready magic nodes used in any path this lcycle (routing or T-terminal).
+     magic_ready_used: usize,
+     tot_magic_unused: usize,
+@@ -60,6 +62,12 @@ impl ScheduleStats {
+             magic_ready_used: 0,
+             tot_magic_unused: 0,
+             plot_info: String::new(),
++            stats_csv: std::env::var("PUREMAGIC_STATS_CSV").ok().map(|path| {
++                let mut w = BufWriter::new(File::create(path).expect("PUREMAGIC_STATS_CSV"));
++                writeln!(w, "lcycle,products,data_used,bus_used,magic_used,t_scheduled,magic_ready")
++                    .expect("PUREMAGIC_STATS_CSV");
++                w
++            }),
+         }
+     }
+ 
+@@ -84,6 +92,15 @@ impl ScheduleStats {
+         self.tot_bus_used += self.bus_used;
+         self.tot_magic_used += self.magic_used;
+         self.tot_magic_unused += magic_unused;
++        if let Some(w) = self.stats_csv.as_mut() {
++            writeln!(
++                w,
++                "{},{},{},{},{},{},{}",
++                lcycle_i, pp_paths_len, self.data_used, self.bus_used, self.magic_used,
++                self.t_scheduled, magic_ready
++            )
++            .expect("PUREMAGIC_STATS_CSV");
++        }
+ 
+         let tot_qubits = self.data_qubits + self.bus_qubits + self.magic_qubits;
+         let tot_qubits_used = self.data_used + self.bus_used + self.magic_used;

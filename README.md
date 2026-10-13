@@ -272,8 +272,19 @@ Both volumes are N × L: N = provisioned tiles (equal to PureMagic's node count 
 and L = `execution_lcycles`, the lcycles from time 0 until the last operation finishes
 (PureMagic: scheduled logical cycles). The output holds `mscmap/` (`summary.csv`,
 `raw_data.zip`), `puremagic/<case>/` (QASM, `.trans`, topology, one log per seed),
-`comparison.csv` (one row per model and sample), `comparison_median.csv`, and
-`manifest.json` (PureMagic commit and flags).
+`comparison.csv` (one row per model and sample, with `active_volume`,
+`mean_active_cells`, `peak_active_cells`, `active_utilization`), `comparison_median.csv`,
+`active_series.csv` (one row per model, sample, and lcycle: active cells by layer, their
+total, and `fraction_of_n`), and `manifest.json` (PureMagic commit, flags, and whether
+the stats hook was present).
+
+The active-cell layers are the same in both models (data, aux, cultivating, holding,
+consume; see Results). PureMagic's data layer is counted from its `circuit.schedule`;
+its bus and magic layers need per-lcycle counters that the binary prints only as
+averages, so apply [examples/puremagic_stats_csv.patch](examples/puremagic_stats_csv.patch)
+(an output hook, no scheduling change) with `git -C ../PureMagic apply ...` and rebuild;
+the hook writes a CSV when `PUREMAGIC_STATS_CSV` is set. Without it, PureMagic rows carry
+the data layer only and `manifest.json` records `puremagic_stats_hook: false`.
 
 > [!TIP]
 > Circuits with arbitrary rotations can grow to 10⁴–10⁵ Clifford+T gates under
@@ -283,16 +294,24 @@ and L = `execution_lcycles`, the lcycles from time 0 until the last operation fi
 
 | File | Contents |
 | --- | --- |
-| `summary.csv` | One row per (case, sample, variant): `status`, `objective`, `execution_lcycles` (lcycles from time 0 until the last operation finishes), `execution_us`, `exchange_count`, `exchange_depth`, `movement_volume`, `relocation_count`, `total_request_wait`, `msc_utilization`, `provisioned_area`, `spacetime_volume` (N × L: provisioned tiles × `execution_lcycles`), `spacetime_volume_us` (tile·µs), `msc_pool_size`, and median `planning_seconds` over repeats. |
-| `raw_data.zip` | `raw_data.jsonl` (`raw_schema_version: 7`): resolved configs (supplied and resolved placement), seeds, samples, all metrics (including policy diagnostics), and operation traces. |
+| `summary.csv` | One row per (case, sample, variant): `status`, `objective`, `execution_lcycles` (lcycles from time 0 until the last operation finishes), `execution_us`, `exchange_count`, `exchange_depth`, `movement_volume`, `relocation_count`, `total_request_wait`, `msc_utilization`, `provisioned_area`, `spacetime_volume` (N × L: provisioned tiles × `execution_lcycles`), `spacetime_volume_us` (tile·µs), `active_volume` (cell·lcycles engaged by operations), `peak_active_tiles`, `active_utilization` (`active_volume` / N × L), `msc_pool_size`, and median `planning_seconds` over repeats. |
+| `raw_data.zip` | `raw_data.jsonl` (`raw_schema_version: 8`): resolved configs (supplied and resolved placement), seeds, samples, all metrics (including policy diagnostics and `active_series`), and operation traces. |
+
+`active_series` is the per-lcycle count of cells engaged by an operation, run-length
+encoded by layer: `data` (operand slots of gates and T consumption, both slots of an
+exchange), `aux` (ancilla/junction tiles, both C slots of a relocation), `cultivating`
+(MSC site under initialize/cultivate), `holding` (MSC site from a successful cultivation's
+end to the consumption start), and `consume` (MSC site during consumption). Idle data
+patches are not active (`data_resident_volume` counts them). It is counted from the
+realized trace after the run, never from planning snapshots.
 
 Request wait is measured from DAG readiness to consumption start. Duplicate
 (case, sample, repeat, variant) keys are rejected. An archive from an older raw schema
 is never merged: a completed batch replaces it (with a warning), while a failed batch
 leaves it untouched; an archive from a newer schema is rejected.
 
-Current versions: model `tile-swap-v3`, schema `3`, raw schema `7`, metrics `online-v6`,
-evaluation `performance-v8`.
+Current versions: model `tile-swap-v3`, schema `3`, raw schema `8`, metrics `online-v7`,
+evaluation `performance-v9`.
 
 ## Project layout
 

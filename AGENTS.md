@@ -226,16 +226,19 @@ runs establish observed software behavior, not general superiority.
 Every run writes only `summary.csv` and `raw_data.zip` to its `--output` directory.
 The archive stores resolved configurations (supplied and resolved placements),
 seeds, samples, per-run metrics, and operation traces as typed JSONL records
-(`raw_schema_version: 7`). The summary has one row per (case, sample, variant) with
+(`raw_schema_version: 8`). The summary has one row per (case, sample, variant) with
 median planning time over repeats. `spacetime_volume` is N × L (provisioned S + C + B
-tiles × realized `execution_lcycles`; `spacetime_volume_us` in tile·µs). A (case, sample, repeat, variant) key must be
+tiles × realized `execution_lcycles`; `spacetime_volume_us` in tile·µs). `active_series`
+(per-lcycle cells engaged by operations, by layer: data, aux, cultivating, holding,
+consume) is counted from the realized trace; `active_volume` and `active_utilization`
+(`active_volume` / N × L) summarize it. A (case, sample, repeat, variant) key must be
 unique; duplicates are rejected. Archives from older raw schemas are never merged: a
 completed batch replaces them with a warning (newer schemas are rejected). Discard the
 pending batch on an exception, leaving the existing archive untouched. Do not run concurrent
 writers. Keep large generated results out of source control.
 
-Current versions: model `tile-swap-v3`, schema `3`, raw schema `7`, metrics `online-v6`,
-evaluation `performance-v8`.
+Current versions: model `tile-swap-v3`, schema `3`, raw schema `8`, metrics `online-v7`,
+evaluation `performance-v9`.
 
 Representative invocations from the repository root:
 

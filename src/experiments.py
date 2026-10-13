@@ -18,7 +18,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from ir import DEPENDENCY_MODES, CircuitDAG, pauli_frame
 from mapping import initial_placement
-from metrics import METRICS_VERSION
+from metrics import METRICS_VERSION, active_metrics
 from model import (
     BOUNDARY_SIDES,
     OPERATION_CONTRACTS,
@@ -37,8 +37,8 @@ from policies import PolicySettings, drive, make_policy
 from qiskit_io import load_qasm, qiskit_version
 from sim import Simulator
 
-RAW_SCHEMA_VERSION = 7
-EVALUATION_VERSION = "performance-v8"
+RAW_SCHEMA_VERSION = 8
+EVALUATION_VERSION = "performance-v9"
 
 ASSUMPTIONS = {
     "model": MODEL_VERSION,
@@ -93,6 +93,13 @@ ASSUMPTIONS = {
     "realized execution_lcycles, including SWAP, supply, and resource waits; "
     "spacetime_volume_us multiplies by lcycle_us",
     "waits": "T dependency readiness to consumption start; supply then access",
+    "active_series": "cells engaged by an operation at each lcycle, by layer: data "
+    "(operand slots of gates and T consumption, both slots of an exchange), aux "
+    "(ancilla/junction tiles, both C slots of a relocation), cultivating (MSC site under "
+    "initialize/cultivate), holding (MSC site from a successful cultivation's end to the "
+    "consumption start), consume (MSC site during consumption); idle data patches are not "
+    "active; active_volume sums all layers over lcycles and active_utilization divides it "
+    "by N x L",
     "claim": "abstract scheduling model, not a physically verified protocol",
 }
 
@@ -481,6 +488,7 @@ def _execute(problem: Problem, config: dict) -> RunResult:
     outcome = drive(sim, policy, settings)
     metrics = {
         **sim.metrics.summary(problem, sim.state, sim.complete),
+        **active_metrics(sim.trace.events, sim.state.time, problem.geometry.area["total"]),
         "planning_seconds": policy.planning_seconds,
         **policy.diagnostics(),
     }
@@ -503,6 +511,9 @@ SUMMARY_COLUMNS = (
     "provisioned_area",
     "spacetime_volume",
     "spacetime_volume_us",
+    "active_volume",
+    "peak_active_tiles",
+    "active_utilization",
     "msc_pool_size",
     "planning_seconds",
 )

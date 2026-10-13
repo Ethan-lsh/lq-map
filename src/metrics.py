@@ -5,6 +5,8 @@ problem's `TimeScale`. `spacetime_volume` is N x L as in PureMagic's volume esti
 N provisioned tiles (S + C + B) times L = `execution_lcycles`, the lcycles from time 0
 until the last operation finishes. Operation counts and volumes are charged when an operation
 starts (its duration is fixed then); cultivation outcomes are charged on completion.
+`active_series` (cells engaged per lcycle, by layer) is counted from the realized event
+log after the run; it never re-executes the schedule.
 """
 
 from collections import Counter
@@ -22,7 +24,87 @@ from model import (
     Tile,
 )
 
-METRICS_VERSION = "online-v6"
+METRICS_VERSION = "online-v7"
+
+# Active-cell layers of the per-lcycle series (`active_series`): cells engaged by an
+# operation at lcycle t. Idle data patches are not active (see data_resident_volume).
+ACTIVE_LAYERS = ("data", "aux", "cultivating", "holding", "consume")
+
+
+def active_series(events: list[dict[str, Any]], horizon: int) -> dict[str, list[list[int]]]:
+    """Per-lcycle active cells by layer, from the realized event log (interval counting
+    over `start` events; no replay). Each layer is run-length encoded as [value, length]
+    pairs covering lcycles 0..horizon-1.
+
+    data: operand slots of gates and T consumption, and both slots of an exchange (the
+    destination may be an empty slot; both are reserved). aux: ancilla/junction tiles of
+    gates and exchanges, and both C slots of a relocation. cultivating: an MSC site under
+    initialize/cultivate. holding: an MSC site from a successful cultivation's end to the
+    consumption start. consume: the MSC site during consumption.
+    """
+    deltas = {layer: [0] * (horizon + 1) for layer in ACTIVE_LAYERS}
+
+    def add(layer: str, start: int, end: int, count: int = 1) -> None:
+        end = min(end, horizon)
+        if count and start < end:
+            deltas[layer][start] += count
+            deltas[layer][end] -= count
+
+    cultivated: dict[str, int] = {}
+    for event in events:
+        if event["event"] != "start":
+            continue
+        action, start, end = event["action"], event["time"], event["end"]
+        kind = action["kind"]
+        ancilla = len(action["contact"]["ancilla"]) if action["contact"] else 0
+        add("aux", start, end, ancilla)
+        if kind in ("single", "two", "exchange"):
+            add("data", start, end, len(action["tiles"]))
+        elif kind == "relocate":
+            add("aux", start, end, len(action["tiles"]))
+        elif kind in CULTIVATION_KINDS:
+            add("cultivating", start, end)
+            if kind == "cultivate":
+                cultivated[action["msc"]] = end
+        elif kind == "consume":
+            add("data", start, end)
+            add("consume", start, end)
+            add("holding", cultivated[action["msc"]], start)
+    series = {}
+    for layer, delta in deltas.items():
+        encoded: list[list[int]] = []
+        level = 0
+        for t in range(horizon):
+            level += delta[t]
+            if encoded and encoded[-1][0] == level:
+                encoded[-1][1] += 1
+            else:
+                encoded.append([level, 1])
+        series[layer] = encoded
+    return series
+
+
+def decode_series(encoded: list[list[int]]) -> list[int]:
+    """Expand a run-length encoded layer to one value per lcycle."""
+    return [value for value, length in encoded for _ in range(length)]
+
+
+def active_metrics(events: list[dict[str, Any]], horizon: int, area: int) -> dict[str, Any]:
+    """`active_series` plus its totals: volume per layer and overall (cell-lcycles),
+    mean and peak active cells, and utilization = active volume / (N x L)."""
+    series = active_series(events, horizon)
+    layers = {layer: decode_series(encoded) for layer, encoded in series.items()}
+    total = [sum(layers[layer][t] for layer in ACTIVE_LAYERS) for t in range(horizon)]
+    volume = sum(total)
+    return {
+        "active_series": series,
+        "active_layers": list(ACTIVE_LAYERS),
+        "active_volume_by_layer": {layer: sum(values) for layer, values in layers.items()},
+        "active_volume": volume,
+        "mean_active_tiles": volume / horizon if horizon else 0.0,
+        "peak_active_tiles": max(total, default=0),
+        "active_utilization": volume / (area * horizon) if horizon else 0.0,
+    }
 
 
 @dataclass
