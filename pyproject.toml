@@ -12,6 +12,7 @@ dependencies = []
 [project.optional-dependencies]
 yaml = ["PyYAML>=6"]
 qiskit = ["qiskit>=2.1"]
+plot = ["matplotlib>=3.8"]
 dev = ["ruff>=0.9"]
 
 [project.scripts]

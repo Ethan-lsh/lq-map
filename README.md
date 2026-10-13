@@ -305,6 +305,19 @@ end to the consumption start), and `consume` (MSC site during consumption). Idle
 patches are not active (`data_resident_volume` counts them). It is counted from the
 realized trace after the run, never from planning snapshots.
 
+```bash
+pip install 'mscmap[plot]'   # matplotlib
+python3 examples/plot_active_series.py results/comparison --output results/comparison/plots
+python3 examples/plot_active_series.py results/pm --output results/pm/plots --case small/toffoli_n3
+```
+
+[examples/plot_active_series.py](examples/plot_active_series.py) draws the recorded
+series: per circuit one PNG stacking the five layers as a fraction of N for each
+variant (a `mscmap run` directory) or each model (a comparator directory, mscmap and
+PureMagic side by side), plus `overview_fraction.png` overlaying the total fraction of
+every model per circuit. It plots the completed sample with the median
+`execution_lcycles` unless `--sample K` selects one; `--case` restricts the circuits.
+
 Request wait is measured from DAG readiness to consumption start. Duplicate
 (case, sample, repeat, variant) keys are rejected. An archive from an older raw schema
 is never merged: a completed batch replaces it (with a warning), while a failed batch

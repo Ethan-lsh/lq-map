@@ -231,7 +231,8 @@ median planning time over repeats. `spacetime_volume` is N × L (provisioned S +
 tiles × realized `execution_lcycles`; `spacetime_volume_us` in tile·µs). `active_series`
 (per-lcycle cells engaged by operations, by layer: data, aux, cultivating, holding,
 consume) is counted from the realized trace; `active_volume` and `active_utilization`
-(`active_volume` / N × L) summarize it. A (case, sample, repeat, variant) key must be
+(`active_volume` / N × L) summarize it. `examples/plot_active_series.py` (optional extra `plot`,
+matplotlib) draws recorded series only. A (case, sample, repeat, variant) key must be
 unique; duplicates are rejected. Archives from older raw schemas are never merged: a
 completed batch replaces them with a warning (newer schemas are rejected). Discard the
 pending batch on an exception, leaving the existing archive untouched. Do not run concurrent
