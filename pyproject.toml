@@ -16,13 +16,14 @@ plot = ["matplotlib>=3.8"]
 dev = ["ruff>=0.9"]
 
 [project.scripts]
-mscmap = "mscmap:main"
+mscmap = "main:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
 py-modules = [
-    "analysis", "experiments", "ir", "mapping", "metrics", "model",
-    "mscmap", "policies", "qiskit_io", "sim", "swaps",
+    "analysis", "experiments", "ir", "main", "mapping", "metrics", "model",
+    "plot_active_series", "policies", "puremagic_compare", "qasm_benchmark", "qiskit_io",
+    "sim", "swaps", "workload_sweep",
 ]
 
 [tool.ruff]

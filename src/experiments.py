@@ -32,7 +32,7 @@ from model import (
     TimeScale,
     tile,
 )
-from mscmap import MODEL_VERSION, SCHEMA_VERSION, __version__
+from main import MODEL_VERSION, SCHEMA_VERSION, __version__
 from policies import PolicySettings, drive, make_policy
 from qiskit_io import load_qasm, qiskit_version
 from sim import Simulator

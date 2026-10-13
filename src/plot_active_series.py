@@ -1,10 +1,10 @@
 """Plot the per-lcycle active-cell series of every circuit as PNG figures.
 
-usage: python3 examples/plot_active_series.py INPUT --output DIR [--sample K] [--case ID]
-
-INPUT is either a `python3 -m mscmap run` output directory (`raw_data.zip`, series
+Command `plot` of `main.py`: `plot INPUT --output DIR [--sample K] [--case ID]`.
+INPUT is either a `run` output directory (`raw_data.zip`, series
 decoded from each run record's `active_series`) or a `puremagic_compare.py` output
-directory (`active_series.csv` + `comparison.csv`, mscmap and PureMagic side by side).
+directory (`active_series.csv` + `comparison.csv`, mscmap and PureMagic side by side)
+of `compare`.
 Per circuit one figure stacks the layers (data, aux, cultivating, holding, consume)
 as a fraction of N for each model, using the completed sample with the median
 `execution_lcycles` unless `--sample` picks one; `overview_fraction.png` overlays the
@@ -15,21 +15,11 @@ total fraction of every model per circuit. Requires matplotlib (`pip install
 import argparse
 import csv
 import json
-import sys
 from pathlib import Path
 from zipfile import ZipFile
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from metrics import ACTIVE_LAYERS, decode_series
 
-from metrics import ACTIVE_LAYERS, decode_series  # noqa: E402
-
-try:
-    import matplotlib
-    import matplotlib.pyplot as plt
-except ImportError as exc:  # pragma: no cover - environment dependent
-    raise SystemExit("matplotlib is required: pip install 'mscmap[plot]'") from exc
-
-matplotlib.use("Agg")
 LAYER_COLORS = dict(zip(ACTIVE_LAYERS, ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4")))
 MODEL_ORDER = (
     "PureMagic", "mscmap/FixedSite", "mscmap/JointScheduler", "FixedSite", "JointScheduler"
@@ -112,7 +102,9 @@ def model_rank(model: str) -> tuple[int, str]:
     return (MODEL_ORDER.index(model) if model in MODEL_ORDER else len(MODEL_ORDER), model)
 
 
-def circuit_figure(case: str, models: list[str], runs: dict, series: dict, wanted, out: Path):
+def circuit_figure(
+    plt, case: str, models: list[str], runs: dict, series: dict, wanted, out: Path
+):
     size = (9, 2.2 * len(models) + 0.8)
     fig, axes = plt.subplots(len(models), 1, figsize=size, sharex=True, sharey=True, squeeze=False)
     top = 0.0
@@ -152,7 +144,7 @@ def circuit_figure(case: str, models: list[str], runs: dict, series: dict, wante
 
 
 def overview_figure(
-    cases: list[str], models: list[str], runs: dict, series: dict, wanted, out: Path
+    plt, cases: list[str], models: list[str], runs: dict, series: dict, wanted, out: Path
 ):
     columns = min(3, len(cases))
     lines = (len(cases) + columns - 1) // columns
@@ -191,15 +183,20 @@ def overview_figure(
     plt.close(fig)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("input", type=Path, help="mscmap run output or puremagic_compare.py output")
     parser.add_argument("--output", type=Path, required=True, help="directory for the PNG files")
     parser.add_argument("--sample", type=int, help="plot this sample instead of the median-L one")
     parser.add_argument("--case", action="append", dest="cases", help="restrict to these case ids")
-    args = parser.parse_args()
+
+
+def execute(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    try:
+        import matplotlib
+        import matplotlib.pyplot as plt
+    except ImportError:
+        parser.error("matplotlib is required: pip install 'mscmap[plot]'")
+    matplotlib.use("Agg")
     if (args.input / "active_series.csv").is_file():
         runs, series = load_compare(args.input)
     elif (args.input / "raw_data.zip").is_file():
@@ -217,10 +214,8 @@ def main() -> None:
     plt.rcParams.update(STYLE)
     for case in cases:
         png = args.output / f"{case.replace('/', '_')}.png"
-        circuit_figure(case, models, runs, series, args.sample, png)
-    overview_figure(cases, models, runs, series, args.sample, args.output / "overview_fraction.png")
+        circuit_figure(plt, case, models, runs, series, args.sample, png)
+    overview = args.output / "overview_fraction.png"
+    overview_figure(plt, cases, models, runs, series, args.sample, overview)
     print(f"wrote {len(cases)} circuit figure(s) and overview_fraction.png to {args.output}")
 
-
-if __name__ == "__main__":
-    main()

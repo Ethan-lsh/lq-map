@@ -1,5 +1,7 @@
 """Benchmark the policies on OpenQASM circuits stored as `<data>/<size class>/*.qasm`.
 
+Command `benchmark` of `main.py`.
+
 Each circuit is converted to Clifford+T once (Qiskit, see `qiskit_io`) and placed on
 a brick layout sized to its qubit count (`workload_sweep.brick_geometry`: data
 qubits in row-major supplied order, MSCs spread from opposite corners). Costs,
@@ -90,8 +92,7 @@ def case_config(common: dict, circuit: dict, args: argparse.Namespace) -> dict:
     return config
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--data", type=Path, default=ROOT / "data")
     parser.add_argument("--size", action="append", choices=SIZE_CLASSES, dest="sizes")
@@ -105,7 +106,9 @@ def main() -> None:
     parser.add_argument("--max-gates", type=int, help="skip larger converted circuits")
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--samples", type=int, default=1)
-    args = parser.parse_args()
+
+
+def execute(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     if min(args.repeats, args.samples, args.msc_count) < 1:
         parser.error("--repeats, --samples, and --msc-count must be positive")
     try:
@@ -176,6 +179,3 @@ def main() -> None:
         f"updated {args.output / 'summary.csv'}"
     )
 
-
-if __name__ == "__main__":
-    main()

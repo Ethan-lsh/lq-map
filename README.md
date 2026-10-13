@@ -32,8 +32,9 @@ limited reusable MSC pool improves utilization without excessive supply delay.
 
 ### Features
 
-- **One CLI, one output layout**: `python3 -m mscmap run` for single or multiple
-  variants, writing `summary.csv` and `raw_data.zip`.
+- **One CLI, one output layout**: `python3 src/main.py` with the commands `run`,
+  `sweep`, `benchmark`, `compare`, and `plot`; every experiment writes `summary.csv`
+  and `raw_data.zip`.
 - **Local-only execution**: every two-patch operation uses direct contact or one
   shared ancilla tile, with explicit reservations and durations.
 - **Two planning policies** sharing one simulator, legality/cost model, and metrics.
@@ -54,8 +55,7 @@ limited reusable MSC pool improves utilization without excessive supply delay.
 From the repository root:
 
 ```bash
-export PYTHONPATH="$PWD/src"
-python3 -m mscmap run --config configs/experiment.yaml --output results/comparison
+python3 src/main.py run --config configs/experiment.yaml --output results/comparison
 ```
 
 This compares `FixedSite` and `JointScheduler` on one brick layout (eight data
@@ -78,9 +78,10 @@ For a hand-checkable case (two qubits, one T gate), use
 ### Install as a package (optional)
 
 ```bash
-python3 -m pip install -e .            # replaces PYTHONPATH; adds the `mscmap` command
+python3 -m pip install -e .            # adds the `mscmap` command (= python3 src/main.py)
 python3 -m pip install -e '.[yaml]'    # general YAML parsing (bundled configs are JSON)
 python3 -m pip install -e '.[qiskit]'  # OpenQASM circuit input
+python3 -m pip install -e '.[plot]'    # matplotlib for `plot`
 ```
 
 ### CLI options
@@ -96,7 +97,7 @@ python3 -m pip install -e '.[qiskit]'  # OpenQASM circuit input
 
 ```bash
 # Record a second timing repeat of one variant in the same output
-python3 -m mscmap run --config configs/experiment.yaml --variant JointScheduler \
+python3 src/main.py run --config configs/experiment.yaml --variant JointScheduler \
   --repeat 2 --output results/comparison
 ```
 
@@ -195,15 +196,20 @@ Qiskit, e.g. [examples/adder4.qasm](examples/adder4.qasm).
 
 ## Experiments
 
-Two scripts in [examples/](examples/) build on the same engine and output format.
+The experiment drivers are commands of the same entry point and use the same
+engine and output format: `sweep` ([src/workload_sweep.py](src/workload_sweep.py)),
+`benchmark` ([src/qasm_benchmark.py](src/qasm_benchmark.py)), `compare`
+([src/puremagic_compare.py](src/puremagic_compare.py)), and `plot`
+([src/plot_active_series.py](src/plot_active_series.py)). `python3 src/main.py
+<command> --help` lists the options.
 
 ### Controlled workload sweep
 
 ```bash
-python3 examples/workload_sweep.py --output results/sweep --case reference --case pool_1
+python3 src/main.py sweep --output results/sweep --case reference --case pool_1
 ```
 
-[examples/workload_sweep.py](examples/workload_sweep.py) runs predeclared
+`sweep` runs predeclared
 one-factor cases against four variants: `FixedSite`, `JointScheduler`,
 `JointFixedPool` (relocation off), and `JointDemandMap` (`demand_aware` mapping).
 Select cases with repeatable `--case` (all cases by default); `--repeats` sets
@@ -224,10 +230,10 @@ timing repeats.
 ### QASM benchmark
 
 ```bash
-python3 examples/qasm_benchmark.py --output results/qasm --size small --size medium --max-gates 2000
+python3 src/main.py benchmark --output results/qasm --size small --size medium --max-gates 2000
 ```
 
-[examples/qasm_benchmark.py](examples/qasm_benchmark.py) (needs `.[qiskit]`) runs
+`benchmark` (needs `.[qiskit]`) runs
 the circuits in `data/<small|medium|large>/*.qasm`. It converts each circuit once,
 sizes a brick layout to its qubit count, and compares `FixedSite` with
 `JointScheduler` from the same initial placement, taking costs and settings from
@@ -248,11 +254,11 @@ sizes a brick layout to its qubit count, and compares `FixedSite` with
 ### PureMagic comparator
 
 ```bash
-python3 examples/puremagic_compare.py --output results/pm --puremagic ../PureMagic \
+python3 src/main.py compare --output results/pm --puremagic ../PureMagic \
   --qasm examples/adder4.qasm --size medium --circuit simon_n6 --samples 5
 ```
 
-[examples/puremagic_compare.py](examples/puremagic_compare.py) compares mscmap with
+`compare` (needs `.[qiskit]`) compares mscmap with
 the external [PureMagic](https://github.com/BQSKit/PureMagic) scheduler under matched
 constraints. Build it first (`cargo build --release --bin transpile --bin puremagic`;
 needs Rust, a C toolchain, `m4`, and `git submodule update --init`). Both models get
@@ -306,15 +312,14 @@ patches are not active (`data_resident_volume` counts them). It is counted from 
 realized trace after the run, never from planning snapshots.
 
 ```bash
-pip install 'mscmap[plot]'   # matplotlib
-python3 examples/plot_active_series.py results/comparison --output results/comparison/plots
-python3 examples/plot_active_series.py results/pm --output results/pm/plots --case small/toffoli_n3
+python3 src/main.py plot results/comparison --output results/comparison/plots
+python3 src/main.py plot results/pm --output results/pm/plots --case small/toffoli_n3
 ```
 
-[examples/plot_active_series.py](examples/plot_active_series.py) draws the recorded
+`plot` (needs `.[plot]`, matplotlib) draws the recorded
 series: per circuit one PNG stacking the five layers as a fraction of N for each
-variant (a `mscmap run` directory) or each model (a comparator directory, mscmap and
-PureMagic side by side), plus `overview_fraction.png` overlaying the total fraction of
+variant (a `run`, `sweep`, or `benchmark` output) or each model (a `compare` output,
+mscmap and PureMagic side by side), plus `overview_fraction.png` overlaying the total fraction of
 every model per circuit. It plots the completed sample with the median
 `execution_lcycles` unless `--sample K` selects one; `--case` restricts the circuits.
 
@@ -328,11 +333,12 @@ evaluation `performance-v9`.
 
 ## Project layout
 
-Modules sit directly in [`src/`](src/) (flat layout, run with `PYTHONPATH=src`):
+Modules sit directly in [`src/`](src/) (flat layout; `python3 src/main.py` needs no
+`PYTHONPATH`, `PYTHONPATH=src python3 -m main` also works):
 
 | Module | Responsibility |
 | --- | --- |
-| `mscmap` | Version constants and the `run` CLI |
+| `main` | Version constants and the CLI (`run`, `sweep`, `benchmark`, `compare`, `plot`) |
 | `ir` | Circuit input, stable logical operands, dependency DAG |
 | `qiskit_io` | Optional OpenQASM import and Clifford+T decomposition |
 | `analysis` | Dependency-only demand estimates and interaction counts |
@@ -343,9 +349,14 @@ Modules sit directly in [`src/`](src/) (flat layout, run with `PYTHONPATH=src`):
 | `policies` | Shared base rule, candidates, rollouts, the two policies |
 | `metrics` | Online `RunMetrics` |
 | `experiments` | Configuration, workloads, variants, samples, exports |
+| `workload_sweep` | `sweep`: controlled one-factor workload cases |
+| `qasm_benchmark` | `benchmark`: OpenQASM circuits on brick layouts |
+| `puremagic_compare` | `compare`: matched runs against the external PureMagic binaries |
+| `plot_active_series` | `plot`: PNG figures of the recorded `active_series` |
 
 Other resources:
 
 - [Description.md](Description.md): current research brief and constraints.
 - [AGENTS.md](AGENTS.md): full modeling invariants and repository conventions.
 - `data/`: OpenQASM benchmark circuits by size class.
+- `examples/`: input data only ([tiny.json](examples/tiny.json), [adder4.qasm](examples/adder4.qasm), the PureMagic stats patch).

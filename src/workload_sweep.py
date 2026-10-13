@@ -1,4 +1,8 @@
-"""Controlled workload cases using the common engine and repeated planning timings."""
+"""Controlled workload cases using the common engine and repeated planning timings.
+
+Command `sweep` of `main.py`: predeclared one-factor cases around a reference
+workload, every variant from the same resolved placement.
+"""
 
 import argparse
 import copy
@@ -117,12 +121,13 @@ def case_config(common: dict, spec: dict) -> dict:
     return config
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--case", action="append", dest="cases", help="select a case; repeatable")
-    args = parser.parse_args()
+
+
+def execute(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     if args.repeats < 1:
         parser.error("--repeats must be positive")
     specs = case_specs()
@@ -166,6 +171,3 @@ def main() -> None:
                 print(f"{case_id}: repeat {repeat + 1}/{args.repeats} recorded", flush=True)
     print(f"Added {run_count} raw runs; updated {args.output / 'summary.csv'}")
 
-
-if __name__ == "__main__":
-    main()

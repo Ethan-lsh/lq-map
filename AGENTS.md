@@ -28,8 +28,11 @@ model.
 
 ## Current execution scope
 
-There is one public CLI, `python3 -m mscmap run`, and one output layout for single
-and multiple variants. Do not add separate demo/compare/validate commands,
+There is one public CLI, `python3 src/main.py` (`mscmap` after `pip install -e .`),
+with the commands `run` (configured variants), `sweep`, `benchmark`, `compare`, and
+`plot`, and one output layout for single and multiple variants. Experiment drivers
+are commands of that entry point, implemented as `src/` modules, never scripts under
+`examples/` (which holds data files only). Do not add demo/validate commands,
 duplicate example configurations, a standalone code-test suite, independent trace
 replay, or an exact-optimization backend unless explicitly requested. This does
 not remove input validation, operation preconditions, reservations, dependency
@@ -136,11 +139,12 @@ is not evidence of physical feasibility.
 ## Architecture boundaries
 
 Modules live directly under `src/` (flat layout, absolute imports such as
-`from model import ...`; no package directory). Run with `PYTHONPATH=src`:
+`from model import ...`; no package directory). `python3 src/main.py` needs no
+`PYTHONPATH`; `PYTHONPATH=src python3 -m main` is equivalent:
 
 | Module | Responsibility |
 | --- | --- |
-| `mscmap` | Version constants and the `run` CLI (`python3 -m mscmap`) |
+| `main` | Version constants and the CLI; each command module exposes `add_arguments(parser)` and `execute(args, parser)` |
 | `ir` | Circuit input, stable logical operands, dependency DAG |
 | `qiskit_io` | Optional OpenQASM/Qiskit import and Clifford+T decomposition |
 | `analysis` | Dependency-only demand estimates and interaction counts |
@@ -151,6 +155,10 @@ Modules live directly under `src/` (flat layout, absolute imports such as
 | `policies` | Shared SWAP-based base rule, candidates, rollouts, the two policies, driver |
 | `metrics` | Online `RunMetrics`; no independent replay |
 | `experiments` | Configuration, workloads, variants, samples, exports |
+| `workload_sweep` | `sweep`: predeclared controlled workload cases |
+| `qasm_benchmark` | `benchmark`: OpenQASM circuits (Qiskit) on brick layouts |
+| `puremagic_compare` | `compare`: matched runs against the external PureMagic binaries |
+| `plot_active_series` | `plot`: PNG figures of recorded `active_series` (optional matplotlib) |
 
 The simulator is policy-neutral. SWAP planning proposes executable actions; it does
 not bypass reservations. Analysis supplies estimates; it does not mutate execution
@@ -231,8 +239,7 @@ median planning time over repeats. `spacetime_volume` is N × L (provisioned S +
 tiles × realized `execution_lcycles`; `spacetime_volume_us` in tile·µs). `active_series`
 (per-lcycle cells engaged by operations, by layer: data, aux, cultivating, holding,
 consume) is counted from the realized trace; `active_volume` and `active_utilization`
-(`active_volume` / N × L) summarize it. `examples/plot_active_series.py` (optional extra `plot`,
-matplotlib) draws recorded series only. A (case, sample, repeat, variant) key must be
+(`active_volume` / N × L) summarize it; the `plot` command draws recorded series only. A (case, sample, repeat, variant) key must be
 unique; duplicates are rejected. Archives from older raw schemas are never merged: a
 completed batch replaces them with a warning (newer schemas are rejected). Discard the
 pending batch on an exception, leaving the existing archive untouched. Do not run concurrent
@@ -244,10 +251,11 @@ evaluation `performance-v9`.
 Representative invocations from the repository root:
 
 ```bash
-export PYTHONPATH="$PWD/src"
-python3 -m mscmap run --config configs/experiment.yaml --output results/comparison
-python3 -m mscmap run --config configs/experiment.yaml --variant JointScheduler --repeat 2 --output results/comparison
-python3 examples/workload_sweep.py --output results/sweep --case reference
+python3 src/main.py run --config configs/experiment.yaml --output results/comparison
+python3 src/main.py run --config configs/experiment.yaml --variant JointScheduler --repeat 2 --output results/comparison
+python3 src/main.py sweep --output results/sweep --case reference
+python3 src/main.py compare --output results/pm --puremagic ../PureMagic --circuit toffoli_n3
+python3 src/main.py plot results/pm --output results/pm/plots
 ```
 
 Maintain `configs/experiment.yaml` (both policies) and `configs/tiny.yaml`

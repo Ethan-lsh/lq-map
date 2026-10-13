@@ -18,7 +18,7 @@ from model import (
     contact_rule,
     contacts,
 )
-from mscmap import SCHEMA_VERSION
+from main import SCHEMA_VERSION
 
 PHASE_ON_START = {
     "initialize": Phase.INITIALIZING,

@@ -1,5 +1,7 @@
 """Compare mscmap with the external PureMagic scheduler under matched constraints.
 
+Command `compare` of `main.py`.
+
 PureMagic (https://github.com/BQSKit/PureMagic) is an external comparator: this script
 runs its released `transpile` and `puremagic` binaries from a local build and never
 reimplements its lattice-surgery routing. Results are labeled as outputs of that code
@@ -132,7 +134,7 @@ def to_qasm(circuit: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def execute(command: list[str], cwd: Path, log: Path, env: dict[str, str] | None = None) -> str:
+def run_binary(command: list[str], cwd: Path, log: Path, env: dict[str, str] | None = None) -> str:
     """Run an external binary; keep its combined output and fail with that log."""
     done = subprocess.run(
         command, cwd=cwd, capture_output=True, text=True, check=False, env=env
@@ -149,7 +151,7 @@ def default_topology(binaries: Path, qubits: int, work: Path) -> list[list[str]]
     # One Z measurement per qubit so PureMagic sizes the topology for every qubit.
     lines = ("+" + "_" * q + "Z" + "_" * (qubits - q - 1) + "<M>" for q in range(qubits))
     (work / f"{stem}.trans").write_text("\n".join(lines) + "\n")
-    execute(
+    run_binary(
         [str(binaries / "puremagic"), "-c", f"{stem}.trans", "-r", "0", "-F", "-p", "topo"],
         work,
         work / f"{stem}.log",
@@ -228,7 +230,7 @@ def run_puremagic(
 ) -> list[dict]:
     """Transpile once, then schedule once per seed 1..samples."""
     (work / "circuit.cliffordt.qasm").write_text(to_qasm(circuit))
-    execute(
+    run_binary(
         [
             str(binaries / "transpile"),
             *("-i", "circuit.cliffordt.qasm", "-o", "circuit.trans", "-m", str(args.width)),
@@ -240,7 +242,7 @@ def run_puremagic(
     results = []
     for seed in range(1, args.samples + 1):
         stats = work / f"puremagic.r{seed}.stats.csv"
-        out = execute(
+        out = run_binary(
             [
                 str(binaries / "puremagic"),
                 *("-c", "circuit.trans", "-t", "topology.txt", "-F"),
@@ -404,8 +406,7 @@ def git_revision(path: Path) -> str | None:
     return done.stdout.strip() or None
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output", type=Path, required=True, help="new or empty directory")
     parser.add_argument("--puremagic", type=Path, required=True, help="PureMagic checkout")
     parser.add_argument("--qasm", type=Path, action="append", default=[], help="repeatable")
@@ -421,7 +422,9 @@ def main() -> None:
     parser.add_argument(
         "--lambda", type=float, dest="lam", default=PUREMAGIC_RATE, help="per lcycle"
     )
-    args = parser.parse_args()
+
+
+def execute(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     if min(args.msc_count, args.samples) < 1 or args.width < 0 or args.lam <= 0:
         parser.error("--msc-count and --samples must be positive, --width >= 0, --lambda > 0")
     binaries = args.puremagic.resolve() / "target/release"  # binaries run in case dirs
@@ -550,6 +553,3 @@ def main() -> None:
     (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"wrote {args.output / 'comparison.csv'}")
 
-
-if __name__ == "__main__":
-    main()
