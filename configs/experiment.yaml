@@ -25,7 +25,7 @@
     "movement_volume": 1, "operation_volume": 1, "cultivation_volume": 1,
     "request_wait": 1, "execution_lcycles": 1
   },
-  "mapping": "supplied",
+  "mapping": "demand_aware",
   "workload": {
     "family": "migrating", "requests": 8, "burst": 2, "cx_per_burst": 2,
     "cx_span": "global", "dependency": "independent"
@@ -34,9 +34,5 @@
   "settings": {
     "window": 4, "search_limit": 12,
     "rollout_gates": 0, "event_limit": 100000, "relocation": true
-  },
-  "variants": [
-    {"policy": "FixedSite"},
-    {"policy": "JointScheduler"}
-  ]
+  }
 }

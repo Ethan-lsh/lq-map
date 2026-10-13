@@ -1,4 +1,4 @@
-"""Benchmark the policies on OpenQASM circuits stored as `<data>/<size class>/*.qasm`.
+"""Benchmark the proposed method on OpenQASM circuits stored as `<data>/<size class>/*.qasm`.
 
 Command `benchmark` of `main.py`.
 
@@ -7,10 +7,9 @@ on a brick layout sized to its qubit count (`config.layouts.brick_geometry`: dat
 qubits in row-major supplied order, MSCs spread from opposite corners). Costs,
 supply, objective, and base settings come from `configs/experiment.yaml`.
 
-Every circuit compares FixedSite with JointScheduler (idle-only MSC relocation) from
-the same initial placement, `demand_aware` by default (`--mapping supplied` keeps the
-row-major order). The demand-aware heuristic also chooses the initial MSC sites;
-FixedSite keeps those sites for the whole run.
+Every circuit runs the proposed method only (`execution.engine.proposed_config`):
+demand-aware initial placement of data and MSC sites from the row-major supplied
+order, then JointScheduler with idle-only MSC relocation.
 
 Search bounds are benchmark choices, recorded in the archive: `rollout_gates` bounds
 each JointScheduler rollout, and `event_limit` scales with the gate count so long
@@ -24,28 +23,23 @@ import hashlib
 from math import ceil, sqrt
 from pathlib import Path
 
-from algorithm.mapping import MAPPINGS
 from config.circuits import SIZE_CLASSES, circuit_stats, discover, load_qasm, qiskit_version
 from config.layouts import brick_geometry
 from config.loader import load_document, resolve
 from config.paths import DATA_ROOT, DEFAULT_CONFIG
 from execution.archive import RawDataWriter
-from execution.engine import run_repeats
+from execution.engine import proposed_config, run_repeats
 
-GENERATOR_VERSION = "qasm-benchmark-v2"
+GENERATOR_VERSION = "qasm-benchmark-v3"
 EVENTS_PER_GATE = 50
-# Relocation is explicit; the simulator admits it only for idle MSCs before initialization.
-VARIANTS = {
-    "FixedSite": {"policy": "FixedSite"},
-    "JointScheduler": {"policy": "JointScheduler", "settings": {"relocation": True}},
-}
 
 
 def circuit_config(
     common: dict, circuit: dict, layout: tuple, args: argparse.Namespace, **overrides
 ) -> dict:
     """The common configuration with one converted circuit on `layout` (tiles,
-    placement, MSC sites), the benchmark search bounds, and the selected variants."""
+    placement, MSC sites) and the benchmark search bounds, restricted to the proposed
+    method."""
     tiles, placement, mscs = layout
     config = copy.deepcopy(common)
     config.pop("workload", None)
@@ -60,16 +54,14 @@ def circuit_config(
         "rollout_gates": args.rollout_gates,
         "event_limit": event_limit,
     }
-    config["variants"] = [VARIANTS[name] for name in args.variants or VARIANTS]
-    return config
+    return proposed_config(config)
 
 
 def add_search_arguments(parser: argparse.ArgumentParser) -> None:
-    """Options shared with `compare`: circuit selection, variants, and search bounds."""
+    """Options shared with `compare`: circuit selection, MSC count, and search bounds."""
     parser.add_argument("--data", type=Path, default=DATA_ROOT)
     parser.add_argument("--size", action="append", choices=SIZE_CLASSES, dest="sizes")
     parser.add_argument("--circuit", action="append", dest="stems", help="file stem; repeatable")
-    parser.add_argument("--variant", action="append", choices=VARIANTS, dest="variants")
     parser.add_argument("--msc-count", type=int, default=2)
     parser.add_argument("--rollout-gates", type=int, default=32, help="0 = remaining circuit")
     parser.add_argument("--event-limit", type=int, help=f"default: {EVENTS_PER_GATE} x gates")
@@ -78,7 +70,6 @@ def add_search_arguments(parser: argparse.ArgumentParser) -> None:
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output", type=Path, required=True)
     add_search_arguments(parser)
-    parser.add_argument("--mapping", choices=MAPPINGS, default="demand_aware")
     parser.add_argument("--slot-rows", type=int, help="data rows (default: ceil(sqrt(qubits)))")
     parser.add_argument("--max-gates", type=int, help="skip larger converted circuits")
     parser.add_argument("--repeats", type=int, default=1)
@@ -108,7 +99,7 @@ def execute(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             continue
         slot_rows = args.slot_rows or ceil(sqrt(stats["qubits"]))  # near-square data region
         layout = brick_geometry(stats["qubits"], args.msc_count, slot_rows, 0)
-        config = circuit_config(common, circuit, layout, args, mapping=args.mapping)
+        config = circuit_config(common, circuit, layout, args)
         resolve(config, DEFAULT_CONFIG.parent)
         source = {
             "path": str(path.relative_to(args.data)),
@@ -123,11 +114,10 @@ def execute(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         "repeats": args.repeats,
         "samples": args.samples,
         "msc_count": args.msc_count,
-        "mapping": args.mapping,
+        "method": "proposed: demand_aware mapping, JointScheduler, relocation on",
         "rollout_gates": args.rollout_gates,
         "event_limit": args.event_limit or f"max(config, {EVENTS_PER_GATE} x gates)",
-        "planning_seconds": "median over timing repeats, per case/sample/variant",
-        "order": "variant order rotated by repeat index",
+        "planning_seconds": "median over timing repeats, per case/sample",
         "cases": [case_id for case_id, _, _ in prepared],
         "skipped": skipped,
     }

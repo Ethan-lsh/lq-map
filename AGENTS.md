@@ -29,8 +29,8 @@ model.
 ## Current execution scope
 
 There is one public CLI, `python3 src/main.py` (`mscmap` after `pip install -e .`),
-with the commands `run` (configured variants), `sweep`, `benchmark`, `compare`, and
-`plot`, and one output layout for single and multiple variants. Experiment drivers
+with the commands `run` (configured variants), `benchmark`, `compare`, and `plot`,
+and one output layout for single and multiple variants. Experiment drivers
 are commands of that entry point, implemented as `src/` modules, never scripts under
 `examples/` (which holds data files only). Do not add demo/validate commands,
 duplicate example configurations, a standalone code-test suite, independent trace
@@ -164,10 +164,9 @@ import ...`). `python3 src/main.py` needs no `PYTHONPATH`; `PYTHONPATH=src pytho
 | `config.circuits` | options | Optional OpenQASM/Qiskit import, benchmark data discovery, circuit statistics |
 | `config.layouts` | options | Generated brick tile layouts |
 | `config.paths` | options | Repository locations (`configs/experiment.yaml`, `data/`) |
-| `execution.engine` | execution | Variant resolution, policy execution, samples, timing repeats, environment record |
+| `execution.engine` | execution | Variant resolution, `proposed_config` (the single evaluated method), policy execution, samples, timing repeats, environment record |
 | `execution.archive` | execution | `summary.csv` and `raw_data.zip` writer and reader |
 | `execution.run` | execution | `run`: configured variants of one file |
-| `analysis.sweep` | comparison | `sweep`: predeclared controlled workload cases |
 | `analysis.benchmark` | comparison | `benchmark`: OpenQASM circuits (Qiskit) on brick layouts |
 | `analysis.compare` | comparison | `compare`: matched runs against the external PureMagic binaries |
 | `analysis.plot` | comparison | `plot`: PNG figures of recorded `active_series` (optional matplotlib) |
@@ -201,8 +200,14 @@ reference runs (`success_probability: 1`) remain supported.
 
 | Policy | Role |
 | --- | --- |
-| `FixedSite` | Fixed MSC sites; data SWAPped into contact by the base rule |
-| `JointScheduler` | Chooses among the base rule, MSC relocation, one SWAP pre-positioning step, or waiting, using future demand |
+| `JointScheduler` | The proposed method: chooses among the base rule, MSC relocation, one SWAP pre-positioning step, or waiting, using future demand |
+| `FixedSite` | The base rule alone with fixed MSC sites; a `run` option, not part of any experiment command |
+
+The evaluated configuration is the proposed method only: `demand_aware` mapping,
+`JointScheduler`, `relocation: true` (`execution.engine.proposed_config`). Do not add
+ablation variants (fixed-pool, supplied-mapping, or base-rule-only runs) to the
+experiment commands; the project compares the proposed method against external
+schedulers, not its own components against each other.
 
 All policies use SWAP-based remapping, the same local execution rules, and the same
 measurements; they differ only in planning. The shared base rule executes a ready
@@ -219,22 +224,18 @@ retired policies (`LookaheadJoint`, `ShortestPathRelocation`, `NextRequestGreedy
 
 ## Experiments and reporting
 
-Keep these comparisons separate:
+The experiments compare the proposed method with external schedulers (currently
+PureMagic through `compare`) on OpenQASM circuits under matched constraints: the same
+Clifford+T gate list, grid and area N, number of magic-state resources, supply model,
+and lcycle accounting. Report execution time (`execution_lcycles`), area, and
+spacetime volume side by side, and state the remaining model differences instead of
+normalizing them away. `benchmark` records the proposed method alone on brick
+layouts; there is no internal ablation (no policy-quality, initial-mapping, mobility,
+or resource-pooling comparison between variants).
 
-1. **Policy quality**: identical circuits, placements, geometry, MSC count, costs.
-2. **Initial mapping**: supplied vs demand-aware placement under the same policy.
-3. **Mobility**: fixed vs movable MSC pool at the same pool size.
-4. **Resource pooling**: distributed fixed capacity vs a smaller movable pool;
-   report area and capacity explicitly, using equal-area comparisons where feasible.
-
-Vary T-demand locality and burstiness, Clifford interaction density, circuit size,
-MSC pool size, cultivation latency and supply variability, relocation cost, and
-ancillary space. Include large circuits, high T demand, and cases where extra
-relocation worsens execution time or waiting. Define workload targets relative to the
-supplied placement; never regenerate the circuit after movement.
-
-Variants may override only `name`, `policy`, `settings`, and `mapping`; resolve the
-workload once per run. Measure request waiting from DAG readiness to consumption
+Define workload targets relative to the supplied placement; never regenerate the
+circuit after movement. Variants in `run` configurations may override only `name`,
+`policy`, `settings`, and `mapping`; resolve the workload once per run. Measure request waiting from DAG readiness to consumption
 start. Retain failed and partial runs, but compare completed-run
 performance separately. Never fabricate numbers, exclude inconvenient outcomes, or
 mix model versions. Exclude wall-clock measurements from determinism claims. Small
@@ -264,13 +265,12 @@ Representative invocations from the repository root:
 ```bash
 python3 src/main.py run --config configs/experiment.yaml --output results/comparison
 python3 src/main.py run --config configs/experiment.yaml --variant JointScheduler --repeat 2 --output results/comparison
-python3 src/main.py sweep --output results/sweep --case reference
 python3 src/main.py compare --output results/pm --puremagic ../PureMagic --circuit toffoli_n3
 python3 src/main.py plot results/pm --output results/pm/plots
 ```
 
-Maintain `configs/experiment.yaml` (both policies) and `configs/tiny.yaml`
-(hand-checkable case). Do not run broad sweeps for routine edits.
+Maintain `configs/experiment.yaml` (the proposed method) and `configs/tiny.yaml`
+(hand-checkable case). Do not run broad benchmarks for routine edits.
 
 ## Completion
 

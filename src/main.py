@@ -10,12 +10,11 @@ layout), and `analysis` (comparison commands). Each command module exposes
 import argparse
 import sys
 
-from analysis import benchmark, compare, plot, sweep
+from analysis import benchmark, compare, plot
 from execution import run
 
 COMMANDS = (
     ("run", run),
-    ("sweep", sweep),
     ("benchmark", benchmark),
     ("compare", compare),
     ("plot", plot),

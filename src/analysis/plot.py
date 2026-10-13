@@ -1,7 +1,7 @@
 """Plot the per-lcycle active-cell series of every circuit as PNG figures.
 
 Command `plot` of `main.py`: `plot INPUT --output DIR [--sample K] [--case ID]`.
-INPUT is either a `run`/`sweep`/`benchmark` output directory (`raw_data.zip`, series
+INPUT is either a `run`/`benchmark` output directory (`raw_data.zip`, series
 decoded from each run record's `active_series`) or a `compare` output directory
 (`active_series.csv` + `comparison.csv`, mscmap and PureMagic side by side).
 Per circuit one figure stacks the layers (data, aux, cultivating, holding, consume)
@@ -19,9 +19,7 @@ from algorithm.metrics import ACTIVE_LAYERS, decode_series
 from execution.archive import read_runs
 
 LAYER_COLORS = dict(zip(ACTIVE_LAYERS, ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4")))
-MODEL_ORDER = (
-    "PureMagic", "mscmap/FixedSite", "mscmap/JointScheduler", "FixedSite", "JointScheduler"
-)
+MODEL_ORDER = ("PureMagic", "mscmap/JointScheduler", "JointScheduler")
 MODEL_COLORS = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6")
 INK, INK_SOFT, SURFACE, GRID = "#0b0b0b", "#52514e", "#fcfcfb", "#e6e5e1"
 STYLE = {
@@ -61,7 +59,7 @@ def load_compare(folder: Path) -> tuple[dict, dict]:
 
 
 def load_archive(folder: Path) -> tuple[dict, dict]:
-    """(runs, series) from a `run`, `sweep`, or `benchmark` output directory."""
+    """(runs, series) from a `run` or `benchmark` output directory."""
     runs, series = {}, {}
     for record in read_runs(folder / "raw_data.zip"):
         metrics = record["metrics"]
@@ -178,7 +176,7 @@ def overview_figure(
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("input", type=Path, help="a run/sweep/benchmark or compare output")
+    parser.add_argument("input", type=Path, help="a run/benchmark or compare output")
     parser.add_argument("--output", type=Path, required=True, help="directory for the PNG files")
     parser.add_argument("--sample", type=int, help="plot this sample instead of the median-L one")
     parser.add_argument("--case", action="append", dest="cases", help="restrict to these case ids")

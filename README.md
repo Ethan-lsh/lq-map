@@ -33,11 +33,13 @@ limited reusable MSC pool improves utilization without excessive supply delay.
 ### Features
 
 - **One CLI, one output layout**: `python3 src/main.py` with the commands `run`,
-  `sweep`, `benchmark`, `compare`, and `plot`; every experiment writes `summary.csv`
+  `benchmark`, `compare`, and `plot`; every experiment writes `summary.csv`
   and `raw_data.zip`.
 - **Local-only execution**: every two-patch operation uses direct contact or one
   shared ancilla tile, with explicit reservations and durations.
-- **Two planning policies** sharing one simulator, legality/cost model, and metrics.
+- **One proposed method**: demand-aware initial placement followed by
+  `JointScheduler` with idle-only MSC relocation; the experiment commands run it
+  alone and compare it against external schedulers.
 - **Stochastic cultivation** with seeded, planning-invisible outcomes.
 - **Synthetic workloads or real circuits**: seeded workload families, JSON gate lists,
   or OpenQASM decomposed into Clifford+T by an optional Qiskit front end.
@@ -58,8 +60,8 @@ From the repository root:
 python3 src/main.py run --config configs/experiment.yaml --output results/comparison
 ```
 
-This compares `FixedSite` and `JointScheduler` on one brick layout (eight data
-qubits, two MSCs) and writes:
+This runs the proposed method (`demand_aware` mapping, `JointScheduler`, relocation
+on) on one brick layout (eight data qubits, two MSCs) and writes:
 
 ```text
 results/comparison/
@@ -134,8 +136,8 @@ never by SWAP count alone. The base rule is always a candidate and wins ties.
 
 | Policy | Decision rule |
 | --- | --- |
-| `FixedSite` | Fixed MSC sites; data SWAPped into contact as gates become ready. |
-| `JointScheduler` | Picks the base rule, an MSC relocation, one SWAP pre-positioning step for an upcoming gate, or waiting, by rollout cost of the remaining (or bounded) circuit. |
+| `JointScheduler` | The proposed method. Picks the base rule, an MSC relocation, one SWAP pre-positioning step for an upcoming gate, or waiting, by rollout cost of the remaining (or bounded) circuit. |
+| `FixedSite` | The base rule alone (fixed MSC sites; data SWAPped into contact as gates become ready). Available to `run` configurations; not used by the experiment commands. |
 
 `JointScheduler` search is bounded by `settings`: `window`, `search_limit`,
 `rollout_gates` (0 = remaining circuit), `event_limit`, and `relocation`. When both
@@ -164,7 +166,7 @@ A configuration defines:
 | `mapping` | `supplied` or `demand_aware` initial placement. |
 | `circuit` **or** `workload` | Exactly one: a gate list (inline, `.json`, or `.qasm`) or a seeded synthetic workload. |
 | `policy`, `settings` | Default policy and its search bounds. |
-| `variants` | Per-variant overrides of `name`, `policy`, `settings`, and `mapping` only. |
+| `variants` | Optional per-variant overrides of `name`, `policy`, `settings`, and `mapping` only (for `run`; the experiment commands run the proposed method alone). |
 
 Gate lists use H, S, Sdg, X, Z, T, Tdg, CX, and CZ. Synthetic workload families are
 `localized`, `migrating`, `alternating`, `distributed`, and `random`; T targets are
@@ -194,35 +196,13 @@ model versions.
 ## Experiments
 
 The experiment drivers are commands of the same entry point and use the same
-engine and output format: `sweep` ([src/analysis/sweep.py](src/analysis/sweep.py)),
-`benchmark` ([src/analysis/benchmark.py](src/analysis/benchmark.py)), `compare`
+engine and output format: `benchmark`
+([src/analysis/benchmark.py](src/analysis/benchmark.py)), `compare`
 ([src/analysis/compare.py](src/analysis/compare.py)), and `plot`
-([src/analysis/plot.py](src/analysis/plot.py)). `python3 src/main.py
-<command> --help` lists the options.
-
-### Controlled workload sweep
-
-```bash
-python3 src/main.py sweep --output results/sweep --case reference --case pool_1
-```
-
-`sweep` runs predeclared
-one-factor cases against four variants: `FixedSite`, `JointScheduler`,
-`JointFixedPool` (relocation off), and `JointDemandMap` (`demand_aware` mapping).
-Select cases with repeatable `--case` (all cases by default); `--repeats` sets
-timing repeats.
-
-| Factor | Cases |
-| --- | --- |
-| Reference | `reference` |
-| T-demand locality and burstiness | `t_localized`, `t_alternating`, `t_distributed`, `t_bursty` |
-| Clifford interaction density | `cx_none`, `cx_dense`, `cx_local` |
-| MSC pool size | `pool_1`, `pool_4` |
-| Supply latency and variability | `cultivation_slow`, `supply_stochastic` |
-| Relocation cost | `relocation_costly` |
-| Ancillary space | `ancilla_poor`, `ancilla_scarce` |
-| Resource pooling (equal area) | `pooling_distributed_4`, `pooling_movable_2` |
-| Scale | `large_high_demand` |
+([src/analysis/plot.py](src/analysis/plot.py)). Both experiment commands run the
+proposed method only (`demand_aware` mapping, `JointScheduler`, relocation on;
+`proposed_config` in [src/execution/engine.py](src/execution/engine.py)); there are
+no ablation variants. `python3 src/main.py <command> --help` lists the options.
 
 ### QASM benchmark
 
@@ -232,15 +212,14 @@ python3 src/main.py benchmark --output results/qasm --size small --size medium -
 
 `benchmark` (needs `.[qiskit]`) runs
 the circuits in `data/<small|medium|large>/*.qasm`. It converts each circuit once,
-sizes a brick layout to its qubit count, and compares `FixedSite` with
-`JointScheduler` from the same initial placement, taking costs and settings from
-`configs/experiment.yaml`. Case IDs are `<size>/<file stem>`.
+sizes a brick layout to its qubit count, places data and MSC sites with the
+demand-aware mapping from the row-major supplied order, and runs `JointScheduler`,
+taking costs and settings from `configs/experiment.yaml`. Case IDs are
+`<size>/<file stem>`.
 
 | Option | Default | Description |
 | --- | --- | --- |
 | `--size`, `--circuit` | all | Select size classes or file stems (repeatable). |
-| `--variant` | both | Restrict to one policy (repeatable). |
-| `--mapping` | `demand_aware` | `supplied` keeps row-major order. |
 | `--slot-rows` | `ceil(sqrt(qubits))` | Data rows of the brick layout. |
 | `--msc-count` | 2 | MSC pool size. |
 | `--rollout-gates` | 32 | JointScheduler rollout bound (0 = remaining circuit). |
@@ -262,7 +241,9 @@ needs Rust, a C toolchain, `m4`, and `git submodule update --init`). Both models
 the same resolved Clifford+T gate list, the same grid and area N (PureMagic's default
 bus-routing topology with `--msc-count` magic nodes; mscmap places C slots on the
 magic nodes, S slots holding the same qubits on the data nodes, and B/empty S tiles in
-the brick pattern elsewhere), the same fixed magic-state resources, the same
+the brick pattern elsewhere; mscmap's demand-aware mapping may re-place data among
+the S slots), the same number of magic-state resources (no spare C slot, so MSC
+sites stay fixed), the same
 exponential cultivation (`--lambda`, default 0.0387396 per lcycle; `--samples N` runs
 mscmap samples 0..N-1 and PureMagic seeds 1..N), explicit Cliffords at the same lcycle
 costs (PureMagic transpile weight limit `--width`, default 1), and no T-injection
@@ -315,7 +296,7 @@ python3 src/main.py plot results/pm --output results/pm/plots --case small/toffo
 
 `plot` (needs `.[plot]`, matplotlib) draws the recorded
 series: per circuit one PNG stacking the five layers as a fraction of N for each
-variant (a `run`, `sweep`, or `benchmark` output) or each model (a `compare` output,
+variant (a `run` or `benchmark` output) or each model (a `compare` output,
 mscmap and PureMagic side by side), plus `overview_fraction.png` overlaying the total fraction of
 every model per circuit. It plots the completed sample with the median
 `execution_lcycles` unless `--sample K` selects one; `--case` restricts the circuits.
@@ -337,7 +318,7 @@ main` also works). Dependencies point one way: `analysis` → `execution` → `c
 
 ```text
 src/
-├── main.py            CLI: registers the commands run, sweep, benchmark, compare, plot
+├── main.py            CLI: registers the commands run, benchmark, compare, plot
 ├── versions.py        package, schema, model, raw schema, metrics, evaluation versions
 ├── algorithm/         the scheduling algorithm (no file or output formats)
 │   ├── circuit.py     circuit input, dependency DAG, Pauli frame
@@ -355,11 +336,10 @@ src/
 │   ├── layouts.py     generated brick tile layouts
 │   └── paths.py       configs/experiment.yaml and data/ locations
 ├── execution/         running experiments
-│   ├── engine.py      variants, samples, timing repeats, environment record
+│   ├── engine.py      variants, proposed method, samples, timing repeats, environment record
 │   ├── archive.py     summary.csv and raw_data.zip writer and reader
 │   └── run.py         `run` command
 └── analysis/          comparison and analysis commands
-    ├── sweep.py       `sweep`: controlled one-factor workload cases
     ├── benchmark.py   `benchmark`: OpenQASM circuits on brick layouts
     ├── compare.py     `compare`: matched runs against the external PureMagic binaries
     └── plot.py        `plot`: PNG figures of the recorded active_series

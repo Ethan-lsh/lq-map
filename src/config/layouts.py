@@ -1,4 +1,4 @@
-"""Generated tile layouts for the experiment commands (`sweep`, `benchmark`)."""
+"""Generated tile layouts for the `benchmark` command."""
 
 from math import ceil
 

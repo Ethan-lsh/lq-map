@@ -1,5 +1,9 @@
 """Execute configured variants: resolve the workload once, run every policy variant on
-each stochastic sample, and export runs to the shared archive."""
+each stochastic sample, and export runs to the shared archive.
+
+`proposed_config` restricts a configuration to the proposed method, the single variant
+that the experiment drivers (`benchmark`, `compare`) execute.
+"""
 
 import hashlib
 import platform
@@ -24,6 +28,19 @@ from versions import (
     SCHEMA_VERSION,
     __version__,
 )
+
+
+# The proposed method: demand-aware initial placement of data and MSC sites, then
+# JointScheduler with idle-only MSC relocation. Drivers run no other variant.
+PROPOSED_METHOD = {"policy": "JointScheduler", "mapping": "demand_aware"}
+
+
+def proposed_config(config: dict) -> dict:
+    """`config` with the proposed method as its only variant (named `JointScheduler`)."""
+    settings = {**config.get("settings", {}), "relocation": True}
+    restricted = {**config, **PROPOSED_METHOD, "settings": settings}
+    restricted.pop("variants", None)
+    return restricted
 
 
 @dataclass

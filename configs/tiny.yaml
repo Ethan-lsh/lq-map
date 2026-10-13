@@ -7,10 +7,7 @@
   "costs": {"cultivate": 2},
   "timing": {"code_distance": 17},
   "circuit": "../examples/tiny.json",
+  "mapping": "demand_aware",
   "policy": "JointScheduler",
-  "settings": {"search_limit": 8},
-  "variants": [
-    {"policy": "FixedSite"},
-    {"policy": "JointScheduler"}
-  ]
+  "settings": {"search_limit": 8, "relocation": true}
 }

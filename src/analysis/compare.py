@@ -15,11 +15,14 @@ For every circuit, both models get:
 - the same grid and area N: PureMagic's default bus-routing topology for the qubit
   count with magic nodes reduced to `--msc-count` (extra magic nodes become bus), and
   an mscmap geometry on that grid (`matched_geometry`): magic nodes are the C slots
-  holding the MSCs, data nodes are S slots holding the same logical qubits in
-  PureMagic's column-major numbering (`mapping: supplied`), and every other node is a
-  B tile where (row + column) % 3 == 2, else an empty S slot. PureMagic routes through
-  that space; mscmap uses it for exchanges (SWAPs) and local ancillas;
-- the same number of fixed magic-state resources (no other C slot, so no relocation);
+  holding the MSCs, data nodes are S slots supplied with the same logical qubits in
+  PureMagic's column-major numbering, and every other node is a B tile where
+  (row + column) % 3 == 2, else an empty S slot. PureMagic routes through that space;
+  mscmap runs the proposed method (`execution.engine.proposed_config`): its
+  demand-aware mapping may re-place data among the S slots before execution, and it
+  uses the space for exchanges (SWAPs) and local ancillas;
+- the same number of magic-state resources; with no other C slot, mscmap's relocation
+  (enabled) has no destination, so the MSC sites stay fixed;
 - the same supply: exponential cultivation time with rate lambda per lcycle, rounded to
   an integer, restarted after each consumption, never interrupted (PureMagic bus
   routing does not route through magic nodes); mscmap `supply.distribution:
@@ -79,7 +82,7 @@ from config.paths import DEFAULT_CONFIG
 from execution.archive import RawDataWriter, read_runs
 from execution.engine import run
 
-GENERATOR_VERSION = "puremagic-compare-v3"
+GENERATOR_VERSION = "puremagic-compare-v4"
 STATS_HOOK = "PUREMAGIC_STATS_CSV"  # see examples/puremagic_stats_csv.patch
 QASM_NAMES = {k: k.lower() for k in ("H", "S", "SDG", "X", "Z", "T", "TDG", "CX", "CZ")}
 COLUMNS = (
@@ -207,14 +210,13 @@ def matched_geometry(grid: list[list[str]], qubits: list[str]) -> tuple[list, di
 
 
 def case_config(common: dict, circuit: dict, grid: list, args: argparse.Namespace) -> dict:
-    """The benchmark configuration on PureMagic's grid with matched supply and no
-    initial remapping (PureMagic's column-major data order)."""
+    """The benchmark configuration (proposed method) on PureMagic's grid with matched
+    supply; PureMagic's column-major data order is the supplied placement."""
     return circuit_config(
         common,
         circuit,
         matched_geometry(grid, circuit["qubits"]),
         args,
-        mapping="supplied",
         supply={"distribution": "exponential", "rate": args.lam},
     )
 
@@ -516,7 +518,8 @@ def execute(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         "magic_nodes": args.msc_count,
         "topology": "PureMagic default bus-routing topology, extra magic nodes -> bus; mscmap "
         "geometry on the same grid (magic -> C, data -> S, other -> B if (r+c)%3==2 else S)",
-        "mapping": "supplied (PureMagic column-major data order)",
+        "mscmap_method": "proposed: demand_aware mapping from PureMagic's column-major "
+        "data order, JointScheduler, relocation on (no spare C slot)",
         "qiskit": qiskit_version(),
         "cases": sorted({row["case_id"] for row in rows}),
         "volume_definitions": {
