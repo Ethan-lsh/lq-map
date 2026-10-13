@@ -3,7 +3,7 @@
 from collections import Counter
 from collections.abc import Mapping
 
-from ir import CircuitDAG
+from algorithm.circuit import CircuitDAG
 
 
 def asap_starts(circuit: CircuitDAG, durations: Mapping[str, int]) -> dict[str, int]:

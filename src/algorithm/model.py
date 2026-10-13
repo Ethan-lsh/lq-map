@@ -13,8 +13,8 @@ from math import ceil, floor
 from random import Random
 from typing import Any
 
-from analysis import request_order
-from ir import CircuitDAG, Gate
+from algorithm.circuit import CircuitDAG, Gate
+from algorithm.demand import request_order
 
 Tile = tuple[int, int]  # (row, column)
 
@@ -55,8 +55,10 @@ OPERATION_CONTRACTS = {
     "cultivate": (
         "initialized MSC",
         "site slot",
-        "success: one owned output; failure: back to assigned (retry); duration is "
-        "costs.cultivate, or an exponential sample under supply.distribution=exponential",
+        (
+            "success: one owned output; failure: back to assigned (retry); duration is "
+            "costs.cultivate, or an exponential sample under supply.distribution=exponential"
+        ),
     ),
     "consume": (
         "dependency-ready T; owned output; data and output Z sides in local contact",

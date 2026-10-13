@@ -1,18 +1,22 @@
-"""Optional Qiskit front end: OpenQASM or a `QuantumCircuit` -> the mscmap circuit format.
+"""Circuit files: the optional Qiskit front end for OpenQASM and the benchmark data set.
 
-Qiskit only parses the circuit and decomposes it into the model's Clifford+T gate set;
+Qiskit only parses a circuit and decomposes it into the model's Clifford+T gate set;
 arbitrary rotations are approximated by Qiskit's synthesis, which therefore sets the T
-count. Dependencies, placement, and scheduling stay in mscmap. Logical qubits are
-named `q<i>` by their index in the circuit. Final measurements are removed and
-barriers ignored; mid-circuit measurement, reset, and classical control are rejected.
+count. Dependencies, placement, and scheduling stay in mscmap. Logical qubits are named
+`q<i>` by their index in the circuit. Final measurements are removed and barriers
+ignored; mid-circuit measurement, reset, and classical control are rejected.
 """
 
+from collections import Counter
 from pathlib import Path
 from typing import Any
+
+from algorithm.circuit import CircuitDAG
 
 BASIS = ("h", "s", "sdg", "x", "z", "t", "tdg", "cx", "cz")
 IGNORED = frozenset({"barrier"})
 OPTIMIZATION_LEVEL = 1
+SIZE_CLASSES = ("small", "medium", "large")  # subdirectories of the data set
 
 
 def _qiskit():
@@ -68,3 +72,34 @@ def from_qiskit(circuit) -> dict[str, Any]:
         qubits = [names[compiled.find_bit(q).index] for q in instruction.qubits]
         gates.append({"id": f"g{len(gates):05d}", "kind": kind.upper(), "qubits": qubits})
     return {"qubits": names, "gates": gates}
+
+
+def discover(data: Path, sizes: list[str], stems: list[str] | None) -> list[tuple[str, Path]]:
+    """(size class, path) of `<data>/<size>/*.qasm` in size order, then file name;
+    `stems` selects circuits."""
+    found = [(size, path) for size in sizes for path in sorted((data / size).glob("*.qasm"))]
+    if stems:
+        unknown = set(stems) - {path.stem for _, path in found}
+        if unknown:
+            raise ValueError(f"unknown circuits under {data}: {sorted(unknown)}")
+        found = [(size, path) for size, path in found if path.stem in stems]
+    if not found:
+        raise ValueError(f"no .qasm files under {data} for sizes {', '.join(sizes)}")
+    return found
+
+
+def circuit_stats(circuit: dict) -> dict:
+    """Qubit, gate, T, and two-qubit counts and the dependency depth of a gate list."""
+    kinds = Counter(gate["kind"] for gate in circuit["gates"])
+    dag = CircuitDAG.from_dict(circuit)
+    depth: dict[str, int] = {}
+    for gate in dag.gates:
+        depth[gate.id] = 1 + max((depth[p] for p in gate.predecessors), default=0)
+    return {
+        "qubits": len(circuit["qubits"]),
+        "gates": len(circuit["gates"]),
+        "t_count": kinds["T"] + kinds["TDG"],
+        "two_qubit": kinds["CX"] + kinds["CZ"],
+        "depth": max(depth.values(), default=0),
+        "kinds": dict(sorted(kinds.items())),
+    }

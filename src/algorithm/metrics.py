@@ -13,7 +13,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
-from model import (
+from algorithm.model import (
     CULTIVATION_KINDS,
     GATE_KINDS,
     MOVEMENT_KINDS,
@@ -23,8 +23,7 @@ from model import (
     SystemState,
     Tile,
 )
-
-METRICS_VERSION = "online-v7"
+from versions import METRICS_VERSION
 
 # Active-cell layers of the per-lcycle series (`active_series`): cells engaged by an
 # operation at lcycle t. Idle data patches are not active (see data_resident_volume).

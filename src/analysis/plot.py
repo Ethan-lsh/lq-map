@@ -1,10 +1,9 @@
 """Plot the per-lcycle active-cell series of every circuit as PNG figures.
 
 Command `plot` of `main.py`: `plot INPUT --output DIR [--sample K] [--case ID]`.
-INPUT is either a `run` output directory (`raw_data.zip`, series
-decoded from each run record's `active_series`) or a `puremagic_compare.py` output
-directory (`active_series.csv` + `comparison.csv`, mscmap and PureMagic side by side)
-of `compare`.
+INPUT is either a `run`/`sweep`/`benchmark` output directory (`raw_data.zip`, series
+decoded from each run record's `active_series`) or a `compare` output directory
+(`active_series.csv` + `comparison.csv`, mscmap and PureMagic side by side).
 Per circuit one figure stacks the layers (data, aux, cultivating, holding, consume)
 as a fraction of N for each model, using the completed sample with the median
 `execution_lcycles` unless `--sample` picks one; `overview_fraction.png` overlays the
@@ -14,11 +13,10 @@ total fraction of every model per circuit. Requires matplotlib (`pip install
 
 import argparse
 import csv
-import json
 from pathlib import Path
-from zipfile import ZipFile
 
-from metrics import ACTIVE_LAYERS, decode_series
+from algorithm.metrics import ACTIVE_LAYERS, decode_series
+from execution.archive import read_runs
 
 LAYER_COLORS = dict(zip(ACTIVE_LAYERS, ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4")))
 MODEL_ORDER = (
@@ -44,7 +42,7 @@ STYLE = {
 
 
 def load_compare(folder: Path) -> tuple[dict, dict]:
-    """(runs, series) from puremagic_compare.py output."""
+    """(runs, series) from a `compare` output directory."""
     runs, series = {}, {}
     with (folder / "comparison.csv").open() as f:
         for row in csv.DictReader(f):
@@ -63,27 +61,23 @@ def load_compare(folder: Path) -> tuple[dict, dict]:
 
 
 def load_archive(folder: Path) -> tuple[dict, dict]:
-    """(runs, series) from a `mscmap run` output directory."""
+    """(runs, series) from a `run`, `sweep`, or `benchmark` output directory."""
     runs, series = {}, {}
-    with ZipFile(folder / "raw_data.zip") as data, data.open("raw_data.jsonl") as records:
-        for line in records:
-            record = json.loads(line)
-            if record["type"] != "run":
-                continue
-            metrics = record["metrics"]
-            key = (record["case_id"], record["name"], record["sample"])
-            runs[key] = {
-                "status": metrics["status"],
-                "lcycles": metrics["execution_lcycles"],
-                "area": metrics["provisioned_area"],
-                "active_volume": metrics["active_volume"],
-                "active_utilization": metrics["active_utilization"],
-            }
-            layers = {k: decode_series(v) for k, v in metrics["active_series"].items()}
-            series[key] = []
-            for t in range(metrics["execution_lcycles"]):
-                row = {k: layers[k][t] for k in ACTIVE_LAYERS}
-                series[key].append({**row, "total": sum(row.values())})
+    for record in read_runs(folder / "raw_data.zip"):
+        metrics = record["metrics"]
+        key = (record["case_id"], record["name"], record["sample"])
+        runs[key] = {
+            "status": metrics["status"],
+            "lcycles": metrics["execution_lcycles"],
+            "area": metrics["provisioned_area"],
+            "active_volume": metrics["active_volume"],
+            "active_utilization": metrics["active_utilization"],
+        }
+        layers = {k: decode_series(v) for k, v in metrics["active_series"].items()}
+        series[key] = []
+        for t in range(metrics["execution_lcycles"]):
+            row = {k: layers[k][t] for k in ACTIVE_LAYERS}
+            series[key].append({**row, "total": sum(row.values())})
     return runs, series
 
 
@@ -169,7 +163,7 @@ def overview_figure(
         ax.set_xlim(left=0)
         ax.set_xlabel("lcycle")
         ax.set_ylabel("active / N")
-    handles, labels = {}, []
+    handles: dict[str, object] = {}
     for ax in axes.flat:
         for handle, label in zip(*ax.get_legend_handles_labels()):
             handles.setdefault(label, handle)
@@ -184,7 +178,7 @@ def overview_figure(
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("input", type=Path, help="mscmap run output or puremagic_compare.py output")
+    parser.add_argument("input", type=Path, help="a run/sweep/benchmark or compare output")
     parser.add_argument("--output", type=Path, required=True, help="directory for the PNG files")
     parser.add_argument("--sample", type=int, help="plot this sample instead of the median-L one")
     parser.add_argument("--case", action="append", dest="cases", help="restrict to these case ids")

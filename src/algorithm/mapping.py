@@ -13,10 +13,10 @@ local contact, ignoring other patches; unreachable pairs use the ranking penalty
 
 from collections import defaultdict
 
-from analysis import interaction_demand
-from ir import CircuitDAG
-from model import ContactRule, Geometry, Tile, contact_rule
-from swaps import pair_distance
+from algorithm.circuit import CircuitDAG
+from algorithm.demand import interaction_demand
+from algorithm.model import ContactRule, Geometry, Tile, contact_rule
+from algorithm.swaps import pair_distance
 
 MAPPINGS = ("supplied", "demand_aware")
 MAPPING_PASSES = 4

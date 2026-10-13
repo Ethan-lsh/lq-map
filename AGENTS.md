@@ -40,10 +40,13 @@ checks, or termination checks: those conditions define the execution model.
 
 The implementation has no required external quantum framework. Keep the
 framework-neutral circuit and execution contracts; add SDK integrations only for an
-explicitly requested task. Qiskit is an optional circuit front end (`qiskit_io`,
-extra `mscmap[qiskit]`): it parses OpenQASM and decomposes circuits into Clifford+T
-only; it never performs layout, routing, or scheduling. Prefer focused modules and reuse existing configuration
-and execution paths rather than introducing unnecessary files or directories.
+explicitly requested task. Qiskit is an optional circuit front end
+(`config.circuits`, extra `mscmap[qiskit]`): it parses OpenQASM and decomposes
+circuits into Clifford+T only; it never performs layout, routing, or scheduling.
+Prefer focused modules and reuse existing configuration and execution paths rather
+than introducing unnecessary files or directories. Configurations from retired
+models or policies are rejected as unknown fields or names; there is no
+migration layer.
 
 ## Working procedure
 
@@ -138,27 +141,36 @@ is not evidence of physical feasibility.
 
 ## Architecture boundaries
 
-Modules live directly under `src/` (flat layout, absolute imports such as
-`from model import ...`; no package directory). `python3 src/main.py` needs no
-`PYTHONPATH`; `PYTHONPATH=src python3 -m main` is equivalent:
+Sources live under `src/` as one entry module, one version module, and four
+packages, one per role; imports are absolute from `src/` (`from algorithm.model
+import ...`). `python3 src/main.py` needs no `PYTHONPATH`; `PYTHONPATH=src python3
+-m main` is equivalent. Dependencies point one way: `analysis` → `execution` →
+`config` → `algorithm` → `versions`; `main` only registers commands.
 
-| Module | Responsibility |
-| --- | --- |
-| `main` | Version constants and the CLI; each command module exposes `add_arguments(parser)` and `execute(args, parser)` |
-| `ir` | Circuit input, stable logical operands, dependency DAG |
-| `qiskit_io` | Optional OpenQASM/Qiskit import and Clifford+T decomposition |
-| `analysis` | Dependency-only demand estimates and interaction counts |
-| `model` | Geometry, local contacts and contact rules, costs, supply model, objective, state, operation contracts |
-| `swaps` | SWAP planning: free contacts, exchange neighbors/trees, contact-pair targets, static SWAP distances |
-| `mapping` | Supplied or demand-aware initial placement |
-| `sim` | Event execution, legality, reservations, lifecycle, traces |
-| `policies` | Shared SWAP-based base rule, candidates, rollouts, the two policies, driver |
-| `metrics` | Online `RunMetrics`; no independent replay |
-| `experiments` | Configuration, workloads, variants, samples, exports |
-| `workload_sweep` | `sweep`: predeclared controlled workload cases |
-| `qasm_benchmark` | `benchmark`: OpenQASM circuits (Qiskit) on brick layouts |
-| `puremagic_compare` | `compare`: matched runs against the external PureMagic binaries |
-| `plot_active_series` | `plot`: PNG figures of recorded `active_series` (optional matplotlib) |
+| Module | Role | Responsibility |
+| --- | --- | --- |
+| `main` | execution | The CLI; registers each command module, which exposes `add_arguments(parser)` and `execute(args, parser)` |
+| `versions` | execution | Package, configuration schema, model, raw schema, metrics, and evaluation versions |
+| `algorithm.circuit` | algorithm | Circuit input, stable logical operands, dependency DAG, Pauli frame |
+| `algorithm.demand` | algorithm | Dependency-only demand estimates and interaction counts |
+| `algorithm.model` | algorithm | Geometry, local contacts and contact rules, costs, supply model, objective, state, operation contracts |
+| `algorithm.swaps` | algorithm | SWAP planning: free contacts, exchange neighbors/trees, contact-pair targets, static SWAP distances |
+| `algorithm.mapping` | algorithm | Supplied or demand-aware initial placement |
+| `algorithm.simulator` | algorithm | Event execution, legality, reservations, lifecycle, traces |
+| `algorithm.policies` | algorithm | Shared SWAP-based base rule, candidates, rollouts, the two policies, driver |
+| `algorithm.metrics` | algorithm | Online `RunMetrics` and `active_series`; no independent replay |
+| `config.loader` | options | Configuration documents: loading, validation, resolution into a `Problem`, recorded assumptions |
+| `config.workload` | options | Seeded synthetic workload families |
+| `config.circuits` | options | Optional OpenQASM/Qiskit import, benchmark data discovery, circuit statistics |
+| `config.layouts` | options | Generated brick tile layouts |
+| `config.paths` | options | Repository locations (`configs/experiment.yaml`, `data/`) |
+| `execution.engine` | execution | Variant resolution, policy execution, samples, timing repeats, environment record |
+| `execution.archive` | execution | `summary.csv` and `raw_data.zip` writer and reader |
+| `execution.run` | execution | `run`: configured variants of one file |
+| `analysis.sweep` | comparison | `sweep`: predeclared controlled workload cases |
+| `analysis.benchmark` | comparison | `benchmark`: OpenQASM circuits (Qiskit) on brick layouts |
+| `analysis.compare` | comparison | `compare`: matched runs against the external PureMagic binaries |
+| `analysis.plot` | comparison | `plot`: PNG figures of recorded `active_series` (optional matplotlib) |
 
 The simulator is policy-neutral. SWAP planning proposes executable actions; it does
 not bypass reservations. Analysis supplies estimates; it does not mutate execution
@@ -202,9 +214,8 @@ rule is always a candidate and wins exact ties. Use bounded lookahead with
 configurable limits (`window`, `search_limit`, `rollout_gates`, `event_limit`,
 `relocation`). Bounded search can miss schedules;
 report stalled or limited runs without claiming infeasibility or introducing a
-remote-operation fallback. Legacy names `LookaheadJoint`,
-`ShortestPathRelocation`, and the removed `NextRequestGreedy` are rejected with a
-migration message.
+remote-operation fallback. Only these two policy names exist; do not reintroduce
+retired policies (`LookaheadJoint`, `ShortestPathRelocation`, `NextRequestGreedy`).
 
 ## Experiments and reporting
 

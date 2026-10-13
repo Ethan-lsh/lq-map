@@ -187,20 +187,17 @@ Qiskit, e.g. [examples/adder4.qasm](examples/adder4.qasm).
 > Qiskit only prepares the circuit. Dependencies, placement, and scheduling are
 > mscmap's own, and the resolved config stores the converted gates.
 
-> [!WARNING]
-> Configurations for former models (`layout`, `mode`, `budget`,
-> `long_route_threshold`, `costs.route_tile`, `costs.movement_reach`,
-> `objective.routing_volume`) are rejected with explicit migration errors, as are
-> the legacy policy names `LookaheadJoint`, `ShortestPathRelocation`, and
-> `NextRequestGreedy`.
+Unknown configuration fields, section keys, and policy names are rejected with the
+list of accepted values; there is no migration layer for configurations of former
+model versions.
 
 ## Experiments
 
 The experiment drivers are commands of the same entry point and use the same
-engine and output format: `sweep` ([src/workload_sweep.py](src/workload_sweep.py)),
-`benchmark` ([src/qasm_benchmark.py](src/qasm_benchmark.py)), `compare`
-([src/puremagic_compare.py](src/puremagic_compare.py)), and `plot`
-([src/plot_active_series.py](src/plot_active_series.py)). `python3 src/main.py
+engine and output format: `sweep` ([src/analysis/sweep.py](src/analysis/sweep.py)),
+`benchmark` ([src/analysis/benchmark.py](src/analysis/benchmark.py)), `compare`
+([src/analysis/compare.py](src/analysis/compare.py)), and `plot`
+([src/analysis/plot.py](src/analysis/plot.py)). `python3 src/main.py
 <command> --help` lists the options.
 
 ### Controlled workload sweep
@@ -333,26 +330,40 @@ evaluation `performance-v9`.
 
 ## Project layout
 
-Modules sit directly in [`src/`](src/) (flat layout; `python3 src/main.py` needs no
-`PYTHONPATH`, `PYTHONPATH=src python3 -m main` also works):
+[`src/`](src/) holds the entry point, the version constants, and four packages, one
+per role (`python3 src/main.py` needs no `PYTHONPATH`; `PYTHONPATH=src python3 -m
+main` also works). Dependencies point one way: `analysis` → `execution` → `config` →
+`algorithm` → `versions`.
 
-| Module | Responsibility |
-| --- | --- |
-| `main` | Version constants and the CLI (`run`, `sweep`, `benchmark`, `compare`, `plot`) |
-| `ir` | Circuit input, stable logical operands, dependency DAG |
-| `qiskit_io` | Optional OpenQASM import and Clifford+T decomposition |
-| `analysis` | Dependency-only demand estimates and interaction counts |
-| `model` | Geometry, contacts, costs, supply, objective, state, operation contracts |
-| `swaps` | SWAP planning: free contacts, exchange trees, static SWAP distances |
-| `mapping` | Supplied or demand-aware initial placement |
-| `sim` | Event execution, legality, reservations, lifecycle, traces |
-| `policies` | Shared base rule, candidates, rollouts, the two policies |
-| `metrics` | Online `RunMetrics` |
-| `experiments` | Configuration, workloads, variants, samples, exports |
-| `workload_sweep` | `sweep`: controlled one-factor workload cases |
-| `qasm_benchmark` | `benchmark`: OpenQASM circuits on brick layouts |
-| `puremagic_compare` | `compare`: matched runs against the external PureMagic binaries |
-| `plot_active_series` | `plot`: PNG figures of the recorded `active_series` |
+```text
+src/
+├── main.py            CLI: registers the commands run, sweep, benchmark, compare, plot
+├── versions.py        package, schema, model, raw schema, metrics, evaluation versions
+├── algorithm/         the scheduling algorithm (no file or output formats)
+│   ├── circuit.py     circuit input, dependency DAG, Pauli frame
+│   ├── demand.py      dependency-only demand estimates and interaction counts
+│   ├── model.py       geometry, local contacts, costs, supply, objective, state, contracts
+│   ├── swaps.py       SWAP planning: free contacts, exchange trees, static SWAP distances
+│   ├── mapping.py     supplied or demand-aware initial placement
+│   ├── simulator.py   event execution, legality, reservations, lifecycle, traces
+│   ├── policies.py    shared base rule, candidates, rollouts, FixedSite, JointScheduler
+│   └── metrics.py     online RunMetrics and active_series
+├── config/            option values and inputs
+│   ├── loader.py      configuration loading, validation, resolution, recorded assumptions
+│   ├── workload.py    seeded synthetic workload families
+│   ├── circuits.py    optional OpenQASM/Qiskit import, data-set discovery, circuit stats
+│   ├── layouts.py     generated brick tile layouts
+│   └── paths.py       configs/experiment.yaml and data/ locations
+├── execution/         running experiments
+│   ├── engine.py      variants, samples, timing repeats, environment record
+│   ├── archive.py     summary.csv and raw_data.zip writer and reader
+│   └── run.py         `run` command
+└── analysis/          comparison and analysis commands
+    ├── sweep.py       `sweep`: controlled one-factor workload cases
+    ├── benchmark.py   `benchmark`: OpenQASM circuits on brick layouts
+    ├── compare.py     `compare`: matched runs against the external PureMagic binaries
+    └── plot.py        `plot`: PNG figures of the recorded active_series
+```
 
 Other resources:
 

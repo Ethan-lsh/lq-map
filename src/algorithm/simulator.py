@@ -4,9 +4,9 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from ir import Gate
-from metrics import RunMetrics
-from model import (
+from algorithm.circuit import Gate
+from algorithm.metrics import RunMetrics
+from algorithm.model import (
     GATE_KINDS,
     MSC,
     RELOCATABLE_PHASES,
@@ -18,7 +18,7 @@ from model import (
     contact_rule,
     contacts,
 )
-from main import SCHEMA_VERSION
+from versions import SCHEMA_VERSION
 
 PHASE_ON_START = {
     "initialize": Phase.INITIALIZING,

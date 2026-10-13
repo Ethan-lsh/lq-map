@@ -15,8 +15,8 @@ from itertools import chain, zip_longest
 from time import perf_counter
 from typing import Any
 
-from ir import Gate
-from model import (
+from algorithm.circuit import Gate
+from algorithm.model import (
     Action,
     ContactRule,
     Phase,
@@ -25,8 +25,8 @@ from model import (
     Tile,
     contact_rule,
 )
-from sim import Simulator
-from swaps import (
+from algorithm.simulator import Simulator
+from algorithm.swaps import (
     contact_pairs,
     exchange_action,
     exchange_options,
@@ -466,16 +466,9 @@ class JointScheduler(Policy):
 
 
 POLICIES = {p.__name__: p for p in (FixedSite, JointScheduler)}
-RETIRED_POLICIES = {
-    "LookaheadJoint": "was replaced by JointScheduler; update the config",
-    "ShortestPathRelocation": "was replaced by JointScheduler; update the config",
-    "NextRequestGreedy": "was removed; use FixedSite or JointScheduler",
-}
 
 
 def make_policy(name: str, settings: PolicySettings) -> Policy:
-    if name in RETIRED_POLICIES:
-        raise ValueError(f"policy {name} {RETIRED_POLICIES[name]}")
     if name not in POLICIES:
         raise ValueError(f"unknown policy {name!r}; choose one of {', '.join(POLICIES)}")
     return POLICIES[name](settings)

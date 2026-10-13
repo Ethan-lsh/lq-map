@@ -62,7 +62,6 @@ lcycle, so they are not used for the data layer.
 """
 
 import argparse
-import copy
 import csv
 import json
 import os
@@ -70,14 +69,15 @@ import re
 import statistics
 import subprocess
 from pathlib import Path
-from zipfile import ZipFile
 
-from qasm_benchmark import EVENTS_PER_GATE, ROOT, SIZE_CLASSES, VARIANTS, circuit_stats, discover
-
-from experiments import RawDataWriter, load_document, resolve, run
-from metrics import ACTIVE_LAYERS, decode_series
-from model import PUREMAGIC_RATE
-from qiskit_io import load_qasm, qiskit_version
+from algorithm.metrics import ACTIVE_LAYERS, decode_series
+from algorithm.model import PUREMAGIC_RATE
+from analysis.benchmark import add_search_arguments, circuit_config
+from config.circuits import SIZE_CLASSES, circuit_stats, discover, load_qasm, qiskit_version
+from config.loader import load_document, resolve
+from config.paths import DEFAULT_CONFIG
+from execution.archive import RawDataWriter, read_runs
+from execution.engine import run
 
 GENERATOR_VERSION = "puremagic-compare-v3"
 STATS_HOOK = "PUREMAGIC_STATS_CSV"  # see examples/puremagic_stats_csv.patch
@@ -207,22 +207,16 @@ def matched_geometry(grid: list[list[str]], qubits: list[str]) -> tuple[list, di
 
 
 def case_config(common: dict, circuit: dict, grid: list, args: argparse.Namespace) -> dict:
-    tiles, placement, mscs = matched_geometry(grid, circuit["qubits"])
-    config = copy.deepcopy(common)
-    config.pop("workload", None)
-    config.update(geometry={"tiles": tiles}, placement=placement, mscs=mscs, circuit=circuit)
-    config.update(mapping="supplied", supply={"distribution": "exponential", "rate": args.lam})
-    settings = config.get("settings", {})
-    event_limit = args.event_limit or max(
-        settings.get("event_limit", 1), EVENTS_PER_GATE * len(circuit["gates"])
+    """The benchmark configuration on PureMagic's grid with matched supply and no
+    initial remapping (PureMagic's column-major data order)."""
+    return circuit_config(
+        common,
+        circuit,
+        matched_geometry(grid, circuit["qubits"]),
+        args,
+        mapping="supplied",
+        supply={"distribution": "exponential", "rate": args.lam},
     )
-    config["settings"] = {
-        **settings,
-        "rollout_gates": args.rollout_gates,
-        "event_limit": event_limit,
-    }
-    config["variants"] = [VARIANTS[name] for name in args.variants or VARIANTS]
-    return config
 
 
 def run_puremagic(
@@ -339,20 +333,16 @@ def active_totals(series: dict, lcycles: int, n_total: int) -> dict:
 def mscmap_series_rows(archive: Path) -> list[dict]:
     """Rows for every mscmap run in the archive, decoded from `active_series`."""
     rows = []
-    with ZipFile(archive) as data, data.open("raw_data.jsonl") as records:
-        for line in records:
-            record = json.loads(line)
-            if record["type"] != "run":
-                continue
-            metrics = record["metrics"]
-            series = {k: decode_series(v) for k, v in metrics["active_series"].items()}
-            rows += series_rows(
-                record["case_id"],
-                f"mscmap/{record['name']}",
-                record["sample"],
-                series,
-                metrics["provisioned_area"],
-            )
+    for record in read_runs(archive):
+        metrics = record["metrics"]
+        series = {k: decode_series(v) for k, v in metrics["active_series"].items()}
+        rows += series_rows(
+            record["case_id"],
+            f"mscmap/{record['name']}",
+            record["sample"],
+            series,
+            metrics["provisioned_area"],
+        )
     return rows
 
 
@@ -410,15 +400,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output", type=Path, required=True, help="new or empty directory")
     parser.add_argument("--puremagic", type=Path, required=True, help="PureMagic checkout")
     parser.add_argument("--qasm", type=Path, action="append", default=[], help="repeatable")
-    parser.add_argument("--data", type=Path, default=ROOT / "data")
-    parser.add_argument("--size", action="append", choices=SIZE_CLASSES, dest="sizes")
-    parser.add_argument("--circuit", action="append", dest="stems", help="data file stem")
-    parser.add_argument("--variant", action="append", choices=VARIANTS, dest="variants")
-    parser.add_argument("--msc-count", type=int, default=2)
+    add_search_arguments(parser)
     parser.add_argument("--samples", type=int, default=5, help="stochastic samples per model")
     parser.add_argument("--width", type=int, default=1, help="PureMagic transpile weight limit")
-    parser.add_argument("--rollout-gates", type=int, default=32, help="0 = remaining circuit")
-    parser.add_argument("--event-limit", type=int, help="default: 50 x gates")
     parser.add_argument(
         "--lambda", type=float, dest="lam", default=PUREMAGIC_RATE, help="per lcycle"
     )
@@ -436,8 +420,7 @@ def execute(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     if args.sizes or args.stems or not found:
         found += discover(args.data, args.sizes or list(SIZE_CLASSES), args.stems)
 
-    config_path = ROOT / "configs/experiment.yaml"
-    common = load_document(config_path)
+    common = load_document(DEFAULT_CONFIG)
     rows: list[dict] = []
     series: list[dict] = []
     hooked = True
@@ -450,11 +433,11 @@ def execute(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             work.mkdir(parents=True)
             grid = limit_magic(default_topology(binaries, stats["qubits"], work), args.msc_count)
             config = case_config(common, circuit, grid, args)
-            problem, resolved = resolve(config, config_path.parent)
+            problem, resolved = resolve(config, DEFAULT_CONFIG.parent)
             area = problem.geometry.area
             batch = run(
                 config,
-                config_path.parent,
+                DEFAULT_CONFIG.parent,
                 args.output / "mscmap",
                 samples=args.samples,
                 raw_data=archive,

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mscmap"
-version = "0.3.0"
+version = "0.4.0"
 description = "Reproducible demand-aware patch remapping and MSC scheduling experiments"
 requires-python = ">=3.11"
 dependencies = []
@@ -20,12 +20,12 @@ mscmap = "main:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
-py-modules = [
-    "analysis", "experiments", "ir", "main", "mapping", "metrics", "model",
-    "plot_active_series", "policies", "puremagic_compare", "qasm_benchmark", "qiskit_io",
-    "sim", "swaps", "workload_sweep",
-]
+packages = ["algorithm", "analysis", "config", "execution"]
+py-modules = ["main", "versions"]
 
 [tool.ruff]
 src = ["src"]
 line-length = 100
+
+[tool.ruff.lint]
+extend-select = ["I"]

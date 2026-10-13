@@ -2,8 +2,8 @@
 
 Command `benchmark` of `main.py`.
 
-Each circuit is converted to Clifford+T once (Qiskit, see `qiskit_io`) and placed on
-a brick layout sized to its qubit count (`workload_sweep.brick_geometry`: data
+Each circuit is converted to Clifford+T once (Qiskit, see `config.circuits`) and placed
+on a brick layout sized to its qubit count (`config.layouts.brick_geometry`: data
 qubits in row-major supplied order, MSCs spread from opposite corners). Costs,
 supply, objective, and base settings come from `configs/experiment.yaml`.
 
@@ -21,19 +21,18 @@ skipped before execution and listed in the manifest, never dropped silently.
 import argparse
 import copy
 import hashlib
-from collections import Counter
 from math import ceil, sqrt
 from pathlib import Path
 
-from workload_sweep import brick_geometry
+from algorithm.mapping import MAPPINGS
+from config.circuits import SIZE_CLASSES, circuit_stats, discover, load_qasm, qiskit_version
+from config.layouts import brick_geometry
+from config.loader import load_document, resolve
+from config.paths import DATA_ROOT, DEFAULT_CONFIG
+from execution.archive import RawDataWriter
+from execution.engine import run_repeats
 
-from experiments import RawDataWriter, load_document, resolve, run
-from ir import CircuitDAG
-from mapping import MAPPINGS
-from qiskit_io import load_qasm, qiskit_version
-
-ROOT = Path(__file__).resolve().parents[1]
-SIZE_CLASSES = ("small", "medium", "large")
+GENERATOR_VERSION = "qasm-benchmark-v2"
 EVENTS_PER_GATE = 50
 # Relocation is explicit; the simulator admits it only for idle MSCs before initialization.
 VARIANTS = {
@@ -42,43 +41,16 @@ VARIANTS = {
 }
 
 
-def discover(data: Path, sizes: list[str], stems: list[str] | None) -> list[tuple[str, Path]]:
-    """(size class, path) in size order, then file name; `stems` selects circuits."""
-    found = [(size, path) for size in sizes for path in sorted((data / size).glob("*.qasm"))]
-    if stems:
-        unknown = set(stems) - {path.stem for _, path in found}
-        if unknown:
-            raise ValueError(f"unknown circuits under {data}: {sorted(unknown)}")
-        found = [(size, path) for size, path in found if path.stem in stems]
-    if not found:
-        raise ValueError(f"no .qasm files under {data} for sizes {', '.join(sizes)}")
-    return found
-
-
-def circuit_stats(circuit: dict) -> dict:
-    kinds = Counter(gate["kind"] for gate in circuit["gates"])
-    dag = CircuitDAG.from_dict(circuit)
-    depth: dict[str, int] = {}
-    for gate in dag.gates:
-        depth[gate.id] = 1 + max((depth[p] for p in gate.predecessors), default=0)
-    return {
-        "qubits": len(circuit["qubits"]),
-        "gates": len(circuit["gates"]),
-        "t_count": kinds["T"] + kinds["TDG"],
-        "two_qubit": kinds["CX"] + kinds["CZ"],
-        "depth": max(depth.values(), default=0),
-        "kinds": dict(sorted(kinds.items())),
-    }
-
-
-def case_config(common: dict, circuit: dict, args: argparse.Namespace) -> dict:
-    qubits = len(circuit["qubits"])
-    slot_rows = args.slot_rows or ceil(sqrt(qubits))  # near-square data region
-    tiles, placement, mscs = brick_geometry(qubits, args.msc_count, slot_rows, 0)
+def circuit_config(
+    common: dict, circuit: dict, layout: tuple, args: argparse.Namespace, **overrides
+) -> dict:
+    """The common configuration with one converted circuit on `layout` (tiles,
+    placement, MSC sites), the benchmark search bounds, and the selected variants."""
+    tiles, placement, mscs = layout
     config = copy.deepcopy(common)
     config.pop("workload", None)
     config.update(geometry={"tiles": tiles}, placement=placement, mscs=mscs, circuit=circuit)
-    config["mapping"] = args.mapping
+    config.update(overrides)
     settings = config.get("settings", {})
     event_limit = args.event_limit or max(
         settings.get("event_limit", 1), EVENTS_PER_GATE * len(circuit["gates"])
@@ -92,17 +64,22 @@ def case_config(common: dict, circuit: dict, args: argparse.Namespace) -> dict:
     return config
 
 
-def add_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--data", type=Path, default=ROOT / "data")
+def add_search_arguments(parser: argparse.ArgumentParser) -> None:
+    """Options shared with `compare`: circuit selection, variants, and search bounds."""
+    parser.add_argument("--data", type=Path, default=DATA_ROOT)
     parser.add_argument("--size", action="append", choices=SIZE_CLASSES, dest="sizes")
     parser.add_argument("--circuit", action="append", dest="stems", help="file stem; repeatable")
     parser.add_argument("--variant", action="append", choices=VARIANTS, dest="variants")
-    parser.add_argument("--mapping", choices=MAPPINGS, default="demand_aware")
     parser.add_argument("--msc-count", type=int, default=2)
-    parser.add_argument("--slot-rows", type=int, help="data rows (default: ceil(sqrt(qubits)))")
     parser.add_argument("--rollout-gates", type=int, default=32, help="0 = remaining circuit")
     parser.add_argument("--event-limit", type=int, help=f"default: {EVENTS_PER_GATE} x gates")
+
+
+def add_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--output", type=Path, required=True)
+    add_search_arguments(parser)
+    parser.add_argument("--mapping", choices=MAPPINGS, default="demand_aware")
+    parser.add_argument("--slot-rows", type=int, help="data rows (default: ceil(sqrt(qubits)))")
     parser.add_argument("--max-gates", type=int, help="skip larger converted circuits")
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--samples", type=int, default=1)
@@ -116,8 +93,7 @@ def execute(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     except ValueError as exc:
         parser.error(str(exc))
 
-    config_path = ROOT / "configs/experiment.yaml"
-    common = load_document(config_path)
+    common = load_document(DEFAULT_CONFIG)
     prepared, skipped = [], []
     for size, path in found:
         case_id = f"{size}/{path.stem}"
@@ -130,8 +106,10 @@ def execute(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         if args.max_gates and stats["gates"] > args.max_gates:
             skipped.append({"case_id": case_id, "reason": f"gates > {args.max_gates}", **stats})
             continue
-        config = case_config(common, circuit, args)
-        resolve(config, config_path.parent)
+        slot_rows = args.slot_rows or ceil(sqrt(stats["qubits"]))  # near-square data region
+        layout = brick_geometry(stats["qubits"], args.msc_count, slot_rows, 0)
+        config = circuit_config(common, circuit, layout, args, mapping=args.mapping)
+        resolve(config, DEFAULT_CONFIG.parent)
         source = {
             "path": str(path.relative_to(args.data)),
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
@@ -140,7 +118,7 @@ def execute(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         prepared.append((case_id, config, {"source": source, "circuit_stats": stats}))
 
     manifest = {
-        "generator_version": "qasm-benchmark-v2",
+        "generator_version": GENERATOR_VERSION,
         "qiskit": qiskit_version(),
         "repeats": args.repeats,
         "samples": args.samples,
@@ -158,24 +136,22 @@ def execute(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         archive.write({"type": "manifest", **manifest})
         for case_id, config, details in prepared:
             archive.write({"type": "case", "case_id": case_id, "input": config, **details})
-            for repeat in range(args.repeats):
-                variants = config["variants"]
-                offset = repeat % len(variants)
-                ordered = {**config, "variants": variants[offset:] + variants[:offset]}
-                batch = run(
-                    ordered,
-                    config_path.parent,
-                    args.output,
-                    raw_data=archive,
-                    case_id=case_id,
-                    repeat=repeat + 1,
-                    samples=args.samples,
-                )
-                run_count += len(batch)
+
+            def report(repeat: int, batch: list[dict], case_id: str = case_id) -> None:
                 statuses = ", ".join(f"{row['name']}={row['status']}" for row in batch)
-                print(f"{case_id}: repeat {repeat + 1}/{args.repeats}: {statuses}", flush=True)
+                print(f"{case_id}: repeat {repeat}/{args.repeats}: {statuses}", flush=True)
+
+            run_count += run_repeats(
+                config,
+                DEFAULT_CONFIG.parent,
+                args.output,
+                archive,
+                case_id=case_id,
+                repeats=args.repeats,
+                samples=args.samples,
+                report=report,
+            )
     print(
         f"Added {run_count} raw runs; skipped {len(skipped)} circuits; "
         f"updated {args.output / 'summary.csv'}"
     )
-

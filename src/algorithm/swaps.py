@@ -9,8 +9,8 @@ from collections import deque
 from collections.abc import Container, Iterator
 from functools import cache
 
-from ir import Gate
-from model import (
+from algorithm.circuit import Gate
+from algorithm.model import (
     SIDE_OFFSETS,
     Action,
     Contact,
