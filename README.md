@@ -262,6 +262,35 @@ and L = `execution_lcycles`, the lcycles from time 0 until the last operation fi
 total, and `fraction_of_n`), and `manifest.json` (PureMagic commit, flags, and whether
 the stats hook was present).
 
+#### Architecture-level resource comparison
+
+```bash
+python3 src/main.py compare --output results/arch --puremagic ../PureMagic \
+  --size small --circuit simon_n6 --size medium --layouts matched --layouts brick --samples 10
+```
+
+`--layouts` adds an area-time view. `matched` (default) is the equal-area setting above;
+`brick` also runs mscmap on its own compact brick layout (the `benchmark` layout:
+`--slot-rows` data rows, default ⌈√qubits⌉, MSC sites in the outer rows) with the same
+MSC count and supply, reported as model `mscmap/JointScheduler@brick`. Each row of
+`comparison.csv` (and the medians) then carries the resource metrics that architecture
+studies usually report, computed identically for both models:
+
+| Column | Definition |
+| --- | --- |
+| `physical_qubits` | N × (2d² − 1): one rotated surface-code patch of distance d (`timing.code_distance`) per tile. A first-order estimate: tiles carry no patch or ancilla geometry. |
+| `execution_us`, `physical_volume_qubit_us` | L × lcycle_us, and physical qubits × execution_us. |
+| `tiles_per_logical_qubit` | N / logical qubits (footprint overhead). |
+| `t_throughput` | T gates per lcycle. |
+| `critical_path_lcycles`, `depth_overhead` | Dependency-only lower bound of L for the operations that model executes (mscmap: gate DAG with its costs; PureMagic: `.trans` products chained per qubit with T/M 1, CX 2, S-type 3), and L divided by it. |
+| `magic_utilization`, `holding_fraction` | (cultivating + holding + consume) and holding cell-lcycles over magic resources × L. |
+| `aux_share` | aux cell-lcycles over active cell-lcycles: ancilla/junction tiles (mscmap) or routed bus nodes (PureMagic) among all engaged cells. |
+| `mean_t_wait` | mscmap only: request wait (DAG readiness to consumption start) per T. |
+
+The PureMagic magic and aux shares need the stats hook below. The two layouts answer
+different questions: `matched` compares schedulers on one area, `brick` compares the
+area each architecture needs for its L.
+
 The active-cell layers are the same in both models (data, aux, cultivating, holding,
 consume; see Results). PureMagic's data layer is counted from its `circuit.schedule`;
 its bus and magic layers need per-lcycle counters that the binary prints only as
@@ -300,6 +329,15 @@ variant (a `run` or `benchmark` output) or each model (a `compare` output,
 mscmap and PureMagic side by side), plus `overview_fraction.png` overlaying the total fraction of
 every model per circuit. It plots the completed sample with the median
 `execution_lcycles` unless `--sample K` selects one; `--case` restricts the circuits.
+For a `compare` output it also writes three resource figures from `comparison.csv`
+and `comparison_median.csv`: `resources_physical_qubits.png` (grouped bars of the
+physical-qubit footprint), `resources_active_volume.png` (median active volume with
+the min–max range over samples on a log axis), and `resources_spacetime_volume.png`
+(the area–time plane N versus L with iso-volume guides, beside each run's N × L
+relative to PureMagic split into active and idle cell-lcycles), and one column chart per metric
+sorted by T count: `resources_area.png` (tiles N), `resources_spacetime_ratio.png` (N × L
+relative to PureMagic, reference line at 1), and `resources_active_utilization.png`
+(median with a min–max whisker over samples).
 
 Request wait is measured from DAG readiness to consumption start. Duplicate
 (case, sample, repeat, variant) keys are rejected. An archive from an older raw schema

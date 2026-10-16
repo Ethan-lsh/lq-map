@@ -229,7 +229,12 @@ PureMagic through `compare`) on OpenQASM circuits under matched constraints: the
 Clifford+T gate list, grid and area N, number of magic-state resources, supply model,
 and lcycle accounting. Report execution time (`execution_lcycles`), area, and
 spacetime volume side by side, and state the remaining model differences instead of
-normalizing them away. `benchmark` records the proposed method alone on brick
+normalizing them away. `compare --layouts brick` adds the architecture view: mscmap on
+its own compact brick layout beside the equal-area run, with the resource metrics of
+`comparison.csv` (physical qubits, execution time in µs, physical spacetime volume,
+tiles per logical qubit, T throughput, depth overhead over each model's own
+dependency bound, magic utilization and holding fraction, aux share, mean T wait)
+computed identically for both models and labeled as first-order estimates. `benchmark` records the proposed method alone on brick
 layouts; there is no internal ablation (no policy-quality, initial-mapping, mobility,
 or resource-pooling comparison between variants).
 

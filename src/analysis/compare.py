@@ -45,6 +45,27 @@ double-qubit data patches, and replaces H by its own Clifford products. mscmap r
 final measurements, executes every Clifford through a local contact after SWAPs, and
 charges H `costs.single`.
 
+Architecture comparison (`--layouts`): `matched` (default) is the equal-area setting
+above. `brick` additionally runs mscmap on its own compact brick layout
+(`config.layouts.brick_geometry`, as `benchmark` does) with the same MSC count and
+supply, reported as model `mscmap/JointScheduler@brick`, so the two architectures can
+be compared at the area each one needs (an area-time Pareto view) as well as at equal
+N. Every row also carries resource metrics of the kind architecture papers report:
+`physical_qubits` (N tiles x (2d^2 - 1), one rotated surface-code patch per tile,
+d = `timing.code_distance`; a first-order estimate that ignores patch and ancilla
+geometry), `execution_us` (L x lcycle_us), `physical_volume_qubit_us` (physical
+qubits x execution_us), `tiles_per_logical_qubit` (N / logical qubits, the footprint
+overhead), `t_throughput` (T gates per lcycle), `critical_path_lcycles` (dependency-only
+lower bound of L for the operation list that architecture executes: mscmap's gate DAG
+with its costs; PureMagic's `.trans` products chained per qubit with T/M 1, CX 2,
+S-type 3) and `depth_overhead` (L / critical path), `magic_utilization`
+((cultivating + holding + consume cell-lcycles) / (magic resources x L)),
+`holding_fraction` (holding / (magic resources x L): produced states waiting for a
+request), `aux_share` (aux cell-lcycles / active cell-lcycles: ancilla, junction, or
+routed bus cells among all engaged cells), and `mean_t_wait` (mscmap only: request
+wait from DAG readiness to consumption start per T; PureMagic has no counterpart).
+The series-derived PureMagic shares need the stats hook below.
+
 Volume is N x L in both models. N: mscmap S + C + B tiles; PureMagic data qubits + bus
 + magic nodes; both equal the grid size here. L = execution_lcycles: lcycles from time
 0 until the last operation finishes (PureMagic: scheduled logical cycles).
@@ -71,18 +92,22 @@ import os
 import re
 import statistics
 import subprocess
+from math import ceil, sqrt
 from pathlib import Path
 
+from algorithm.circuit import CircuitDAG
+from algorithm.demand import asap_starts
 from algorithm.metrics import ACTIVE_LAYERS, decode_series
-from algorithm.model import PUREMAGIC_RATE
+from algorithm.model import PUREMAGIC_RATE, OperationCosts
 from analysis.benchmark import add_search_arguments, circuit_config
 from config.circuits import SIZE_CLASSES, circuit_stats, discover, load_qasm, qiskit_version
+from config.layouts import brick_geometry
 from config.loader import load_document, resolve
 from config.paths import DEFAULT_CONFIG
 from execution.archive import RawDataWriter, read_runs
 from execution.engine import run
 
-GENERATOR_VERSION = "puremagic-compare-v4"
+GENERATOR_VERSION = "puremagic-compare-v5"
 STATS_HOOK = "PUREMAGIC_STATS_CSV"  # see examples/puremagic_stats_csv.patch
 QASM_NAMES = {k: k.lower() for k in ("H", "S", "SDG", "X", "Z", "T", "TDG", "CX", "CZ")}
 COLUMNS = (
@@ -103,7 +128,33 @@ COLUMNS = (
     "mean_active_cells",
     "peak_active_cells",
     "active_utilization",
+    "execution_us",
+    "physical_qubits",
+    "physical_volume_qubit_us",
+    "tiles_per_logical_qubit",
+    "t_throughput",
+    "critical_path_lcycles",
+    "depth_overhead",
+    "magic_utilization",
+    "holding_fraction",
+    "aux_share",
+    "mean_t_wait",
 )
+LAYOUTS = ("matched", "brick")
+MEDIAN_OF = (
+    "spacetime_volume",
+    "active_volume",
+    "active_utilization",
+    "execution_us",
+    "physical_volume_qubit_us",
+    "t_throughput",
+    "depth_overhead",
+    "magic_utilization",
+    "holding_fraction",
+    "aux_share",
+    "mean_t_wait",
+)
+CONSTANT_OF = ("physical_qubits", "tiles_per_logical_qubit", "critical_path_lcycles")
 SERIES_COLUMNS = ("case_id", "model", "sample", "lcycle", *ACTIVE_LAYERS, "total", "fraction_of_n")
 MEDIAN_COLUMNS = (
     "case_id",
@@ -116,15 +167,115 @@ MEDIAN_COLUMNS = (
     "execution_lcycles_median",
     "execution_lcycles_min",
     "execution_lcycles_max",
-    "spacetime_volume_median",
-    "active_volume_median",
-    "active_utilization_median",
+    *(f"{name}_median" for name in MEDIAN_OF),
+    *CONSTANT_OF,
 )
+TRANS_COST = {"T": 1, "M": 1, "CX": 2, "S": 3, "Sdg": 3, "SX": 3, "SXdg": 3}
+TRANS_ITEM = re.compile(r"^[+-]([_XYZ]+)<(\w+)>")
 SCHEDULE_LINE = re.compile(r"^\s*(\d+): (\S+) ")
 SCHEDULED = re.compile(r"Scheduled (\d+) in (\d+) logical cycles, volume (\d+)")
 ESTIMATE = re.compile(r"^Volume estimate: (\d+)", re.MULTILINE)
 # Node counts ("  data:  8 (0.121)"); utilization lines ("  data:  0.220") do not match.
 COUNT = re.compile(r"^\s+(data|bus|magic|total):\s+(\d+)\s*(?:\(|$)", re.MULTILINE)
+
+
+def physical_qubits(tiles: int, distance: int) -> int:
+    """One rotated surface-code patch of distance d per tile: d^2 data + d^2 - 1 measure
+    qubits. Abstract tiles carry no patch or ancilla geometry, so this is a labeled
+    first-order estimate shared by both models."""
+    return tiles * (2 * distance * distance - 1)
+
+
+def mscmap_critical_path(resolved: dict) -> int:
+    """Dependency-only lower bound of L for the gate list mscmap executes."""
+    costs = OperationCosts(**resolved["costs"])
+    dag = CircuitDAG.from_dict(resolved["circuit"], resolved["circuit_model"]["dependencies"])
+    durations = {g.id: costs.gate_duration(g) for g in dag.gates}
+    starts = asap_starts(dag, durations)
+    return max((starts[g] + d for g, d in durations.items()), default=0)
+
+
+def trans_critical_path(trans: Path) -> int:
+    """Dependency-only lower bound of L for PureMagic's product list: products chain per
+    qubit (its `gen_deps`), charged the lcycle spans of its layer model."""
+    depth: dict[int, int] = {}
+    for line in trans.read_text().splitlines():
+        found = TRANS_ITEM.match(line.strip())
+        if found is None:
+            continue
+        qubits = [i for i, c in enumerate(found[1]) if c != "_"]
+        start = max((depth.get(q, 0) for q in qubits), default=0)
+        for q in qubits:
+            depth[q] = start + TRANS_COST[found[2]]
+    return max(depth.values(), default=0)
+
+
+def architecture_fields(
+    lcycles: int, n_total: int, stats: dict, lcycle_us: float, distance: int, critical: int
+) -> dict:
+    """Per-run resource metrics (see module docstring); series-derived shares are added
+    by `add_series_fields` once the active series are known."""
+    phys = physical_qubits(n_total, distance)
+    return {
+        "execution_us": lcycles * lcycle_us,
+        "physical_qubits": phys,
+        "physical_volume_qubit_us": phys * lcycles * lcycle_us,
+        "tiles_per_logical_qubit": round(n_total / stats["qubits"], 4),
+        "t_throughput": round(stats["t_count"] / lcycles, 6) if lcycles else "",
+        "critical_path_lcycles": critical,
+        "depth_overhead": round(lcycles / critical, 4) if critical else "",
+    }
+
+
+def series_fields(rows: list[dict], magic: int, lcycles: int) -> dict:
+    """Magic-resource and communication shares from one run's active series rows;
+    blank when a layer was not recorded."""
+
+    def total(layer: str) -> int | None:
+        values = [r[layer] for r in rows if r[layer] != ""]
+        return sum(values) if values else None
+
+    cultivating, holding, consume, aux = (
+        total(layer) for layer in ("cultivating", "holding", "consume", "aux")
+    )
+    active = sum(r["total"] for r in rows)
+    capacity = magic * lcycles
+    busy = None if None in (cultivating, holding, consume) else cultivating + holding + consume
+    return {
+        "magic_utilization": round(busy / capacity, 6) if busy is not None and capacity else "",
+        "holding_fraction": (
+            round(holding / capacity, 6) if holding is not None and capacity else ""
+        ),
+        "aux_share": round(aux / active, 6) if aux is not None and active else "",
+    }
+
+
+def add_series_fields(rows: list[dict], series: list[dict]) -> None:
+    """Fill the series-derived columns of every completed row in place."""
+    by_run: dict[tuple, list[dict]] = {}
+    for item in series:
+        by_run.setdefault((item["case_id"], item["model"], item["sample"]), []).append(item)
+    for row in rows:
+        if row.get("status") != "completed":
+            continue
+        key = (row["case_id"], row["model"], row["sample"])
+        row.update(
+            series_fields(by_run.get(key, []), row["magic_resources"], row["execution_lcycles"])
+        )
+
+
+def mscmap_layout(
+    layout: str, grid: list, circuit: dict, stats: dict, args: argparse.Namespace
+) -> tuple:
+    """(tiles, placement, MSC sites) of mscmap's geometry for `layout`."""
+    if layout == "matched":
+        return matched_geometry(grid, circuit["qubits"])
+    slot_rows = args.slot_rows or ceil(sqrt(stats["qubits"]))  # near-square data region
+    return brick_geometry(stats["qubits"], args.msc_count, slot_rows, 0)
+
+
+def mscmap_model(name: str, layout: str) -> str:
+    return f"mscmap/{name}" if layout == "matched" else f"mscmap/{name}@{layout}"
 
 
 def to_qasm(circuit: dict) -> str:
@@ -209,15 +360,10 @@ def matched_geometry(grid: list[list[str]], qubits: list[str]) -> tuple[list, di
     return tiles, placement, {f"m{i}": list(t) for i, t in enumerate(magic)}
 
 
-def case_config(common: dict, circuit: dict, grid: list, args: argparse.Namespace) -> dict:
-    """The benchmark configuration (proposed method) on PureMagic's grid with matched
-    supply; PureMagic's column-major data order is the supplied placement."""
+def case_config(common: dict, circuit: dict, geometry: tuple, args: argparse.Namespace) -> dict:
+    """The benchmark configuration (proposed method) on `geometry` with matched supply."""
     return circuit_config(
-        common,
-        circuit,
-        matched_geometry(grid, circuit["qubits"]),
-        args,
-        supply={"distribution": "exponential", "rate": args.lam},
+        common, circuit, geometry, args, supply={"distribution": "exponential", "rate": args.lam}
     )
 
 
@@ -338,9 +484,10 @@ def mscmap_series_rows(archive: Path) -> list[dict]:
     for record in read_runs(archive):
         metrics = record["metrics"]
         series = {k: decode_series(v) for k, v in metrics["active_series"].items()}
+        case_id, _, layout = record["case_id"].partition("@")
         rows += series_rows(
-            record["case_id"],
-            f"mscmap/{record['name']}",
+            case_id,
+            mscmap_model(record["name"], layout or "matched"),
             record["sample"],
             series,
             metrics["provisioned_area"],
@@ -368,20 +515,16 @@ def medians(rows: list[dict]) -> list[dict]:
                 "execution_lcycles_median": statistics.median(lcycles) if done else "",
                 "execution_lcycles_min": min(lcycles, default=""),
                 "execution_lcycles_max": max(lcycles, default=""),
-                "spacetime_volume_median": (
-                    statistics.median(r["spacetime_volume"] for r in done) if done else ""
-                ),
-                "active_volume_median": (
-                    statistics.median(r["active_volume"] for r in done) if done else ""
-                ),
-                "active_utilization_median": (
-                    round(statistics.median(r["active_utilization"] for r in done), 6)
-                    if done
-                    else ""
-                ),
+                **{f"{name}_median": _median(done, name) for name in MEDIAN_OF},
+                **{name: group[0].get(name, "") for name in CONSTANT_OF},
             }
         )
     return summary
+
+
+def _median(rows: list[dict], name: str):
+    values = [r[name] for r in rows if r.get(name, "") != ""]
+    return round(statistics.median(values), 6) if values else ""
 
 
 def write_csv(path: Path, columns: tuple[str, ...], rows: list[dict]) -> None:
@@ -404,6 +547,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--qasm", type=Path, action="append", default=[], help="repeatable")
     add_search_arguments(parser)
     parser.add_argument("--samples", type=int, default=5, help="stochastic samples per model")
+    parser.add_argument(
+        "--layouts",
+        action="append",
+        choices=LAYOUTS,
+        help="mscmap layouts: matched (PureMagic's grid, default) and/or brick (its own)",
+    )
+    parser.add_argument(
+        "--slot-rows", type=int, help="brick data rows (default: ceil(sqrt(qubits)))"
+    )
     parser.add_argument("--width", type=int, default=1, help="PureMagic transpile weight limit")
     parser.add_argument(
         "--lambda", type=float, dest="lam", default=PUREMAGIC_RATE, help="per lcycle"
@@ -423,6 +575,7 @@ def execute(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         found += discover(args.data, args.sizes or list(SIZE_CLASSES), args.stems)
 
     common = load_document(DEFAULT_CONFIG)
+    layouts = list(dict.fromkeys(args.layouts or ["matched"]))
     rows: list[dict] = []
     series: list[dict] = []
     hooked = True
@@ -434,49 +587,62 @@ def execute(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             work = args.output / "puremagic" / case_id.replace("/", "__")
             work.mkdir(parents=True)
             grid = limit_magic(default_topology(binaries, stats["qubits"], work), args.msc_count)
-            config = case_config(common, circuit, grid, args)
-            problem, resolved = resolve(config, DEFAULT_CONFIG.parent)
-            area = problem.geometry.area
-            batch = run(
-                config,
-                DEFAULT_CONFIG.parent,
-                args.output / "mscmap",
-                samples=args.samples,
-                raw_data=archive,
-                case_id=case_id,
-            )
-            for row in batch:
-                rows.append(
-                    {
-                        "case_id": case_id,
-                        "model": f"mscmap/{row['name']}",
-                        "sample": row["sample"],
-                        "status": row["status"],
-                        "qubits": stats["qubits"],
-                        "t_count": stats["t_count"],
-                        "magic_resources": row["msc_pool_size"],
-                        "n_total": area["total"],
-                        "n_breakdown": f"S={area['slot']} C={area['cultivation']} "
-                        f"B={area['bus']}",
-                        "execution_lcycles": row["execution_lcycles"],
-                        "spacetime_volume": row["spacetime_volume"],
-                        "spacetime_volume_us": row["spacetime_volume_us"],
-                        "volume_lower_bound": "",
-                        "active_volume": row["active_volume"],
-                        "mean_active_cells": round(
-                            row["active_volume"] / row["execution_lcycles"], 4
-                        ),
-                        "peak_active_cells": row["peak_active_tiles"],
-                        "active_utilization": round(row["active_utilization"], 6),
-                    }
+            for layout in layouts:
+                geometry = mscmap_layout(layout, grid, circuit, stats, args)
+                config = case_config(common, circuit, geometry, args)
+                problem, resolved = resolve(config, DEFAULT_CONFIG.parent)
+                area, timing = problem.geometry.area, resolved["timing"]
+                lcycle_us, distance = timing["lcycle_us"], timing["code_distance"]
+                critical = mscmap_critical_path(resolved)
+                batch = run(
+                    config,
+                    DEFAULT_CONFIG.parent,
+                    args.output / "mscmap",
+                    samples=args.samples,
+                    raw_data=archive,
+                    case_id=case_id if layout == "matched" else f"{case_id}@{layout}",
                 )
-            lcycle_us = resolved["timing"]["lcycle_us"]
+                for row in batch:
+                    lcycles = row["execution_lcycles"]
+                    rows.append(
+                        {
+                            "case_id": case_id,
+                            "model": mscmap_model(row["name"], layout),
+                            "sample": row["sample"],
+                            "status": row["status"],
+                            "qubits": stats["qubits"],
+                            "t_count": stats["t_count"],
+                            "magic_resources": row["msc_pool_size"],
+                            "n_total": area["total"],
+                            "n_breakdown": f"S={area['slot']} C={area['cultivation']} "
+                            f"B={area['bus']}",
+                            "execution_lcycles": lcycles,
+                            "spacetime_volume": row["spacetime_volume"],
+                            "spacetime_volume_us": row["spacetime_volume_us"],
+                            "volume_lower_bound": "",
+                            "active_volume": row["active_volume"],
+                            "mean_active_cells": (
+                                round(row["active_volume"] / lcycles, 4) if lcycles else 0
+                            ),
+                            "peak_active_cells": row["peak_active_tiles"],
+                            "active_utilization": round(row["active_utilization"], 6),
+                            **architecture_fields(
+                                lcycles, area["total"], stats, lcycle_us, distance, critical
+                            ),
+                            "mean_t_wait": (
+                                round(row["total_request_wait"] / stats["t_count"], 4)
+                                if stats["t_count"]
+                                else ""
+                            ),
+                        }
+                    )
             try:
                 results = run_puremagic(binaries, resolved["circuit"], grid, args, work)
             except (RuntimeError, ValueError, OSError) as exc:
                 print(f"{case_id}: PureMagic failed: {exc}", flush=True)
                 rows.append({"case_id": case_id, "model": "PureMagic", "status": "failed"})
                 continue
+            critical = trans_critical_path(work / "circuit.trans")
             for seed, result in enumerate(results, start=1):
                 counts = result["counts"]
                 hooked &= bool(result["series"]["aux"])
@@ -500,13 +666,18 @@ def execute(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                         "spacetime_volume_us": result["volume"] * lcycle_us,
                         "volume_lower_bound": result["volume_lower_bound"],
                         **active_totals(result["series"], result["lcycles"], counts["total"]),
+                        **architecture_fields(
+                            result["lcycles"], counts["total"], stats, lcycle_us, distance, critical
+                        ),
+                        "mean_t_wait": "",
                     }
                 )
             print(f"{case_id}: done", flush=True)
 
+    series = mscmap_series_rows(args.output / "mscmap" / "raw_data.zip") + series
+    add_series_fields(rows, series)
     write_csv(args.output / "comparison.csv", COLUMNS, rows)
     write_csv(args.output / "comparison_median.csv", MEDIAN_COLUMNS, medians(rows))
-    series = mscmap_series_rows(args.output / "mscmap" / "raw_data.zip") + series
     write_csv(args.output / "active_series.csv", SERIES_COLUMNS, series)
     manifest = {
         "generator_version": GENERATOR_VERSION,
@@ -516,6 +687,28 @@ def execute(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         "mscmap_supply": {"distribution": "exponential", "rate": args.lam},
         "samples": args.samples,
         "magic_nodes": args.msc_count,
+        "mscmap_layouts": layouts,
+        "brick_layout": (
+            "config.layouts.brick_geometry(qubits, msc_count, slot_rows, 0); model "
+            "mscmap/JointScheduler@brick"
+            if "brick" in layouts
+            else None
+        ),
+        "architecture_metrics": {
+            "physical_qubits": "N x (2d^2 - 1), one rotated surface-code patch per tile; "
+            "first-order estimate (no patch/ancilla geometry)",
+            "physical_volume_qubit_us": "physical_qubits x execution_us",
+            "tiles_per_logical_qubit": "N / logical qubits",
+            "t_throughput": "T gates / execution_lcycles",
+            "critical_path_lcycles": "dependency-only lower bound of L for the operations "
+            "that model executes (mscmap: gate DAG with its costs; PureMagic: .trans "
+            "products chained per qubit, T/M 1, CX 2, S-type 3)",
+            "depth_overhead": "execution_lcycles / critical_path_lcycles",
+            "magic_utilization": "(cultivating + holding + consume) / (magic resources x L)",
+            "holding_fraction": "holding / (magic resources x L)",
+            "aux_share": "aux cell-lcycles / active cell-lcycles",
+            "mean_t_wait": "mscmap: total_request_wait / T count; PureMagic: not available",
+        },
         "topology": "PureMagic default bus-routing topology, extra magic nodes -> bus; mscmap "
         "geometry on the same grid (magic -> C, data -> S, other -> B if (r+c)%3==2 else S)",
         "mscmap_method": "proposed: demand_aware mapping from PureMagic's column-major "
